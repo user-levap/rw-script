@@ -31,7 +31,7 @@
 #  SOFTWARE.
 # ============================================================================
 
-SCRIPT_VERSION="0.0.1 Beta"
+SCRIPT_VERSION="0.1.0-beta"
 SCRIPT_URL="https://raw.githubusercontent.com/user-levap/rw-script/main/install_remnawave.sh"
 
 DIR_REMNAWAVE="/usr/local/remnawave_reverse/"
@@ -257,6 +257,39 @@ get_public_key() {
   local token=$2
   local resp=$(api_request "GET" "${url%/}/api/keygen" "$token")
   echo "$resp" | jq -r '.response.pubKey // empty'
+}
+
+# Определяем версию панели по подключённым нодам (панель сама не отдаёт свою версию по API)
+detect_panel_node_version() {
+  local url=$1 token=$2
+  local resp=$(api_request "GET" "${url%/}/api/nodes" "$token")
+  echo "$resp" | jq -r '[.response[]? | select(.isConnected == true) | .versions.node // empty] | map(select(length > 0)) | if length > 0 then (sort | reverse | .[0]) else empty end' 2>/dev/null
+}
+
+# Пользовательский выбор версии ноды (совпадает с версией панели)
+select_node_version() {
+  local detected=$1
+  echo ""
+  echo -e "${COLOR_GREEN}Версия Remnawave Node (должна совпадать с версией панели):${COLOR_RESET}"
+  echo ""
+  local i=1
+  declare -A vmap
+  for v in "3.2.2" "3.3.2" "3.3.1" "3.3.0" "2.8.0" "2.7.0"; do
+    echo -e "${COLOR_YELLOW}$i. $v$([ "$v" = "$detected" ] && echo "  <- (текущая в панели)")${COLOR_RESET}"
+    vmap[$i]="$v"
+    ((i++))
+  done
+  echo -e "${COLOR_YELLOW}$i. Ввести свою${COLOR_RESET}"
+  local manual=$i
+  echo ""
+  reading "Выберите версию ноды:" vsel
+  if [ "$vsel" = "$manual" ]; then
+    reading "Введите версию (например 3.2.2):" NODE_IMAGE_VER
+    [ -z "$NODE_IMAGE_VER" ] && NODE_IMAGE_VER="3.2.2"
+  else
+    NODE_IMAGE_VER="${vmap[$vsel]:-3.2.2}"
+  fi
+  echo "$NODE_IMAGE_VER"
 }
 
 generate_xray_keys() {
@@ -1040,6 +1073,19 @@ install_node() {
   reading "Домен ноды (selfsteal, например cdn.example.com):" node_domain
   reading "Название ноды (например Russia 2):" node_name
 
+  # Определяем совместимую версию ноды
+  local panel_ver=""
+  panel_ver=$(detect_panel_node_version "$panel_url" "$api_token")
+  if [ -n "$panel_ver" ]; then
+    log_info "Обнаружена версия ноды в панели: $panel_ver"
+  else
+    log_warn "Не удалось определить версию панели (нет подключённых нод)"
+  fi
+  local node_ver
+  node_ver=$(select_node_version "$panel_ver")
+  local NODE_IMAGE="remnawave/node:$node_ver"
+  log_ok "Будет установлена нода: $NODE_IMAGE"
+
   # Генерируем приватный ключ xray
   log_info "Генерация Xray ключей..."
   local xr_private
@@ -1374,7 +1420,8 @@ manage_cert_menu() {
   echo -e "${COLOR_YELLOW}4. Скопировать сертификаты в /dev/shm (Hysteria)${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}5. Настроить автообновление сертификатов (cron)${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
@@ -1385,32 +1432,33 @@ manage_cert_menu() {
       done
       issue_certificates $domains
       sleep 2
-      manage_cert_menu
       ;;
     2)
       certbot delete --non-interactive > /dev/null 2>&1
       log_ok "Сертификаты удалены. Выпустите заново"
-      manage_cert_menu
+      sleep 2
       ;;
     3)
       certbot certificates 2>/dev/null
-      manage_cert_menu
+      sleep 2
       ;;
     4)
       ls /etc/letsencrypt/live/ 2>/dev/null
       reading "Домен:" dmain
       sync_certs_to_shm "$dmain"
-      manage_cert_menu
+      sleep 2
       ;;
     5)
       ls /etc/letsencrypt/live/ 2>/dev/null
       reading "Домен:" dmain
       setup_cert_cron "$dmain"
-      manage_cert_menu
+      sleep 2
       ;;
-    0) return ;;
-    *) manage_cert_menu ;;
+    9) show_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  manage_cert_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1450,16 +1498,19 @@ bbr_menu() {
   echo -e "${COLOR_YELLOW}2. Включить${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}3. Отключить${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
-    1) bbr_status; sleep 2; bbr_menu ;;
-    2) bbr_enable; sleep 2; bbr_menu ;;
-    3) bbr_disable; sleep 2; bbr_menu ;;
-    0) return ;;
-    *) bbr_menu ;;
+    1) bbr_status; sleep 2 ;;
+    2) bbr_enable; sleep 2 ;;
+    3) bbr_disable; sleep 2 ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  bbr_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1497,15 +1548,18 @@ ipv6_menu() {
   echo -e "${COLOR_YELLOW}1. Включить IPv6${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}2. Отключить IPv6${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
-    1) ipv6_enable; sleep 2; ipv6_menu ;;
-    2) ipv6_disable; sleep 2; ipv6_menu ;;
-    0) return ;;
-    *) ipv6_menu ;;
+    1) ipv6_enable; sleep 2 ;;
+    2) ipv6_disable; sleep 2 ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  ipv6_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1520,33 +1574,32 @@ warp_menu() {
   echo -e "${COLOR_YELLOW}3. Добавить warp-out в конфиг профиля${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}4. Удалить warp-out из конфига${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
     1)
       bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/install.sh)
       sleep 2
-      warp_menu
       ;;
     2)
       bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/uninstall.sh)
       sleep 2
-      warp_menu
       ;;
     3)
       warp_add_config
       sleep 2
-      warp_menu
       ;;
     4)
       warp_remove_config
       sleep 2
-      warp_menu
       ;;
-    0) return ;;
-    *) warp_menu ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  warp_menu
 }
 
 warp_get_panel() {
@@ -1638,26 +1691,25 @@ ufw_menu() {
   echo -e "${COLOR_YELLOW}5. Закрыть порт${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}6. Открыть порт для IP${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
-    1) ufw status verbose; sleep 2; ufw_menu ;;
-    2) ufw enable; sleep 2; ufw_menu ;;
-    3) ufw disable; sleep 2; ufw_menu ;;
+    1) ufw status verbose; sleep 2 ;;
+    2) ufw enable; sleep 2 ;;
+    3) ufw disable; sleep 2 ;;
     4)
       reading "Порт и протокол (например 8080/tcp):" pp
       ufw allow "$pp"
       ufw reload > /dev/null 2>&1
       sleep 2
-      ufw_menu
       ;;
     5)
       reading "Порт и протокол (например 8080/tcp):" pp
       ufw delete allow "$pp"
       ufw reload > /dev/null 2>&1
       sleep 2
-      ufw_menu
       ;;
     6)
       reading "IP адрес:" ip
@@ -1665,11 +1717,12 @@ ufw_menu() {
       ufw allow from "$ip" to any port "${pp%/*}" proto "${pp#*/}"
       ufw reload > /dev/null 2>&1
       sleep 2
-      ufw_menu
       ;;
-    0) return ;;
-    *) ufw_menu ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  ufw_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1685,7 +1738,8 @@ ssh_menu() {
   echo -e "${COLOR_YELLOW}4. Отключить вход по паролю (только ключи)${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}5. Включить вход по паролю${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
@@ -1693,7 +1747,6 @@ ssh_menu() {
       echo ""
       cat ~/.ssh/authorized_keys 2>/dev/null | nl || log_warn "Файл ключей пуст или не существует"
       sleep 2
-      ssh_menu
       ;;
     2)
       mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -1702,7 +1755,6 @@ ssh_menu() {
       echo "$newkey" >> ~/.ssh/authorized_keys
       log_ok "Ключ добавлен"
       sleep 2
-      ssh_menu
       ;;
     3)
       cat ~/.ssh/authorized_keys 2>/dev/null | nl
@@ -1710,7 +1762,6 @@ ssh_menu() {
       sed -i "${kn}d" ~/.ssh/authorized_keys 2>/dev/null
       log_ok "Ключ удалён"
       sleep 2
-      ssh_menu
       ;;
     4)
       sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
@@ -1718,7 +1769,6 @@ ssh_menu() {
       systemctl restart sshd
       log_ok "Вход по паролю отключён"
       sleep 2
-      ssh_menu
       ;;
     5)
       sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
@@ -1726,11 +1776,12 @@ ssh_menu() {
       systemctl restart sshd
       log_ok "Вход по паролю включён"
       sleep 2
-      ssh_menu
       ;;
-    0) return ;;
-    *) ssh_menu ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  ssh_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1747,14 +1798,14 @@ fail2ban_menu() {
   echo -e "${COLOR_YELLOW}5. Разблокировать IP${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}6. Удалить fail2ban${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
     1)
       fail2ban-client status 2>/dev/null || log_warn "fail2ban не установлен"
       sleep 2
-      fail2ban_menu
       ;;
     2)
       if ! command -v fail2ban-client >/dev/null 2>&1; then
@@ -1777,7 +1828,6 @@ EOF
       systemctl enable --now fail2ban
       log_ok "Fail2ban SSH-защита включена"
       sleep 2
-      fail2ban_menu
       ;;
     3)
       fail2ban-client stop sshd 2>/dev/null
@@ -1785,29 +1835,27 @@ EOF
       systemctl restart fail2ban 2>/dev/null
       log_ok "SSH-защита отключена"
       sleep 2
-      fail2ban_menu
       ;;
     4)
       fail2ban-client status sshd 2>/dev/null | grep "Banned IP" || log_warn "Нет данных"
       sleep 2
-      fail2ban_menu
       ;;
     5)
       reading "IP для разблокировки:" bip
       fail2ban-client set sshd unbanip "$bip" 2>/dev/null || log_warn "Не удалось разблокировать"
       sleep 2
-      fail2ban_menu
       ;;
     6)
       systemctl stop fail2ban 2>/dev/null
       apt-get purge -y fail2ban > /dev/null 2>&1
       log_ok "fail2ban удалён"
       sleep 2
-      fail2ban_menu
       ;;
-    0) return ;;
-    *) fail2ban_menu ;;
+    9) extra_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  fail2ban_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -1820,8 +1868,8 @@ show_menu() {
   echo ""
   echo -e "${COLOR_YELLOW}1. Remnawave (панель и страница подписки)${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}2. Remnanode${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}3. Управление сертификатами${COLOR_RESET}"
   echo ""
+  echo -e "${COLOR_YELLOW}3. Управление сертификатами${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}4. Дополнительно${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}5. Обновление скрипта${COLOR_RESET}"
@@ -1854,7 +1902,8 @@ panel_menu() {
   echo -e "${COLOR_YELLOW}6. Доступ к панели (8443 open/close)${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}7. Удалить${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выберите пункт:" opt
   case $opt in
@@ -1876,10 +1925,10 @@ panel_menu() {
       compose_remove panel
       log_warn "Рекомендуется также удалить записи в панели на сайте (вручную)"
       ;;
-    0) show_menu ;;
-    *) panel_menu ;;
+    9) show_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
-  sleep 2
   panel_menu
 }
 
@@ -1890,16 +1939,17 @@ panel_access_menu() {
   echo -e "${COLOR_YELLOW}1. Открыть доступ (8443)${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}2. Закрыть доступ (8443)${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
     1) open_panel_access ;;
     2) close_panel ;;
-    0) panel_menu ;;
-    *) panel_access_menu ;;
+    9) panel_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
-  sleep 2
   panel_access_menu
 }
 
@@ -1914,7 +1964,8 @@ node_menu() {
   echo -e "${COLOR_YELLOW}5. Логи${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}6. Удалить${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выберите пункт:" opt
   case $opt in
@@ -1932,10 +1983,10 @@ node_menu() {
     4) compose_reinstall node ;;
     5) compose_logs node ;;
     6) compose_remove node ;;
-    0) show_menu ;;
-    *) node_menu ;;
+    9) show_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
-  sleep 2
   node_menu
 }
 
@@ -1950,7 +2001,8 @@ extra_menu() {
   echo -e "${COLOR_YELLOW}5. Управление SSH-ключами${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}6. Управление Fail2ban${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
@@ -1960,9 +2012,11 @@ extra_menu() {
     4) ufw_menu ;;
     5) ssh_menu ;;
     6) fail2ban_menu ;;
-    0) show_menu ;;
-    *) extra_menu ;;
+    9) show_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
+  extra_menu
 }
 
 # ---------------------------------------------------------------------------
@@ -2002,7 +2056,8 @@ remove_script() {
   echo -e "${COLOR_YELLOW}1. Только скрипт${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}2. Скрипт + панель + нода (всё)${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}0. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
   echo ""
   reading "Выбор:" opt
   case $opt in
@@ -2015,6 +2070,8 @@ remove_script() {
         echo -e "${COLOR_GREEN}Скрипт удалён${COLOR_RESET}"
         exit 0
       fi
+      sleep 1
+      remove_script
       ;;
     2)
       reading "Удалить скрипт + все данные? (y/N):" c
@@ -2033,9 +2090,12 @@ remove_script() {
         echo -e "${COLOR_GREEN}Удалено.${COLOR_RESET}"
         exit 0
       fi
+      sleep 2
+      remove_script
       ;;
-    0) show_menu ;;
-    *) remove_script ;;
+    9) show_menu ;;
+    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
+    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1; remove_script ;;
   esac
 }
 
