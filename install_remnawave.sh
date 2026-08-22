@@ -1145,7 +1145,7 @@ EOL
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
 
   remnanode:
-    image: remnawave/node:latest
+    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
     container_name: remnanode
     hostname: remnanode
     <<: [*common, *logging]
@@ -1165,7 +1165,7 @@ EOL
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
 
   remnanode:
-    image: remnawave/node:latest
+    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
     container_name: remnanode
     hostname: remnanode
     <<: [*common, *logging]
@@ -1920,7 +1920,7 @@ node_menu() {
   case $opt in
     1) install_node ;;
     2)
-      if docker ps -q --filter "ancestor=remnawave/node:latest" | grep -q . || docker ps --format '{{.Names}}' | grep -q '^remnanode$'; then
+      if docker ps -q --filter "ancestor=remnawave/node:3.2.2" | grep -q . || docker ps --format '{{.Names}}' | grep -q '^remnanode$'; then
         log_info "Нода запущена. Останавливаю..."
         compose_stop node
       else
