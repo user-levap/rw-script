@@ -316,9 +316,9 @@ create_config_profile() {
   local iuuid=$(echo "$resp" | jq -r '.response.inbounds[0].uuid // empty' | head -1)
   if [ -z "$puuid" ] || [ -z "$iuuid" ]; then
     echo "ERROR: $resp" >&2
+    return 1
   fi
-  echo "$puuid"
-  echo "$iuuid"
+  echo "$puuid $iuuid"
 }
 
 create_node() {
