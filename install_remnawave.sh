@@ -269,14 +269,18 @@ generate_xray_keys() {
 create_config_profile() {
   local url=$1 token=$2 name=$3 domain=$4 private_key=$5
   local short_id=$(openssl rand -hex 8)
+  # Уникальный тег на основе имени ноды (защита от конфликта тегов в панели)
+  local tag=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
+  [ -z "$tag" ] && tag="node"
+  tag="${tag}-vless-443"
   local body
-  body=$(jq -n --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" --arg short_id "$short_id" '{
+  body=$(jq -n --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" --arg short_id "$short_id" --arg tag "$tag" '{
     name: $name,
     config: {
       log: { loglevel: "warning" },
       dns: { queryStrategy: "UseIPv4", servers: [{ address: "https://dns.google/dns-query", skipFallback: false }] },
       inbounds: [{
-        tag: "vless-reality-443",
+        tag: $tag,
         port: 443,
         protocol: "vless",
         settings: { clients: [], decryption: "none" },
@@ -308,8 +312,13 @@ create_config_profile() {
     }
   }')
   local resp=$(api_request "POST" "${url%/}/api/config-profiles" "$token" "$body")
-  echo "$resp" | jq -r '.response.uuid // empty' | head -1
-  echo "$resp" | jq -r '.response.inbounds[0].uuid // empty' | head -1
+  local puuid=$(echo "$resp" | jq -r '.response.uuid // empty' | head -1)
+  local iuuid=$(echo "$resp" | jq -r '.response.inbounds[0].uuid // empty' | head -1)
+  if [ -z "$puuid" ] || [ -z "$iuuid" ]; then
+    echo "ERROR: $resp" >&2
+  fi
+  echo "$puuid"
+  echo "$iuuid"
 }
 
 create_node() {
@@ -1026,9 +1035,11 @@ install_node() {
   # Создаём конфиг-профиль с reality (dest /dev/shm/nginx.sock)
   log_info "Создание конфиг-профиля..."
   local profile_uuid inbound_uuid
-  read profile_uuid inbound_uuid <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private")
+  local cp_err=""
+  read profile_uuid inbound_uuid <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private" 2>/tmp/cp_err.txt)
+  cp_err=$(cat /tmp/cp_err.txt 2>/dev/null)
   if [ -z "$profile_uuid" ] || [ -z "$inbound_uuid" ]; then
-    error "Не удалось создать конфиг-профиль"
+    error "Не удалось создать конфиг-профиль: ${cp_err:-проверьте адрес/токен панели}"
   fi
 
   # Создаём ноду в панели
@@ -1994,4 +2005,7 @@ main() {
   show_menu
 }
 
-main "$@"
+# Запускаем main только при прямом выполнении (не при source)
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
