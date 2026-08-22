@@ -341,7 +341,11 @@ create_node() {
     consumptionMultiplier: 1.0
   }')
   local resp=$(api_request "POST" "${url%/}/api/nodes" "$token" "$body")
-  echo "$resp" | jq -r '.response.uuid // empty'
+  local nuuid=$(echo "$resp" | jq -r '.response.uuid // empty')
+  if [ -z "$nuuid" ]; then
+    echo "ERROR: $resp" >&2
+  fi
+  echo "$nuuid"
 }
 
 create_host() {
@@ -1056,10 +1060,11 @@ install_node() {
 
   # Создаём ноду в панели
   log_info "Регистрация ноды в панели..."
-  local node_uuid
-  node_uuid=$(create_node "$panel_url" "$api_token" "$profile_uuid" "$inbound_uuid" "$node_domain" "$node_name")
+  local node_uuid node_err=""
+  node_uuid=$(create_node "$panel_url" "$api_token" "$profile_uuid" "$inbound_uuid" "$node_domain" "$node_name" 2>/tmp/node_err.txt)
+  node_err=$(cat /tmp/node_err.txt 2>/dev/null)
   if [ -z "$node_uuid" ]; then
-    error "Не удалось создать ноду в панели"
+    error "Не удалось создать ноду в панели: ${node_err:-проверьте адрес/токен панели}"
   fi
 
   # Создаём host
