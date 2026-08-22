@@ -214,7 +214,14 @@ api_request() {
   local url=$2
   local token=$3
   local data=$4
-  local headers=(-H "Content-Type: application/json")
+  # Извлекаем хост/IP из URL для X-Forwarded-For (панель требует reverse-proxy headers)
+  local host=$(echo "$url" | sed -E 's#^[a-z]+://##; s#[/?#].*##')
+  local headers=(
+    -H "Content-Type: application/json"
+    -H "X-Forwarded-For: $host"
+    -H "X-Forwarded-Proto: https"
+    -H "X-Forwarded-Host: $host"
+  )
   if [ -n "$token" ]; then
     headers+=(-H "Authorization: Bearer $token")
   fi
@@ -266,22 +273,23 @@ detect_panel_node_version() {
   echo "$resp" | jq -r '[.response[]? | select(.isConnected == true) | .versions.node // empty] | map(select(length > 0)) | if length > 0 then (sort | reverse | .[0]) else empty end' 2>/dev/null
 }
 
-# Пользовательский выбор версии ноды (совпадает с версией панели)
+# Пользовательский выбор версии ноды (совпадает с версией панели).
+# Все echo меню идут в stderr; в stdout выводится только выбранная версия.
 select_node_version() {
   local detected=$1
-  echo ""
-  echo -e "${COLOR_GREEN}Версия Remnawave Node (должна совпадать с версией панели):${COLOR_RESET}"
-  echo ""
+  echo "" >&2
+  echo -e "${COLOR_GREEN}Версия Remnawave Node (должна совпадать с версией панели):${COLOR_RESET}" >&2
+  echo "" >&2
   local i=1
   declare -A vmap
   for v in "3.2.2" "3.3.2" "3.3.1" "3.3.0" "2.8.0" "2.7.0"; do
-    echo -e "${COLOR_YELLOW}$i. $v$([ "$v" = "$detected" ] && echo "  <- (текущая в панели)")${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}$i. $v$([ "$v" = "$detected" ] && echo "  <- (текущая в панели)")${COLOR_RESET}" >&2
     vmap[$i]="$v"
     ((i++))
   done
-  echo -e "${COLOR_YELLOW}$i. Ввести свою${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}$i. Ввести свою${COLOR_RESET}" >&2
   local manual=$i
-  echo ""
+  echo "" >&2
   reading "Выберите версию ноды:" vsel
   if [ "$vsel" = "$manual" ]; then
     reading "Введите версию (например 3.2.2):" NODE_IMAGE_VER
@@ -423,7 +431,9 @@ update_squad() {
 create_api_token() {
   local url=$1 token=$2 name=$3
   local body='{"name":"'"$name"'","expiresInDays":365,"scopes":["*"]}'
-  api_request "POST" "${url%/}/api/tokens" "$token" "$body" | jq -r '.response.token // empty'
+  local resp=$(api_request "POST" "${url%/}/api/tokens" "$token" "$body")
+  echo "DEBUG create_api_token resp: ${resp:0:300}" >&2
+  echo "$resp" | jq -r '.response.token // empty'
 }
 
 # ---------------------------------------------------------------------------
@@ -539,15 +549,16 @@ compose_remove() {
 # Сертификаты (HTTP-01 / DNS-01)
 # ---------------------------------------------------------------------------
 issue_certificates() {
-  # $1..$N — домены (первый основной). CERT_METHOD: 1 = HTTP-01, 2 = DNS-01(CF)
+  # $1..$N — домены. CERT_METHOD: 1 = HTTP-01, 2 = DNS-01(CF)
   local domains=("$@")
-  local primary="${domains[0]}"
-  local base_domain=$(echo "$primary" | sed -E 's/^[^.]+\.//')
+  local port_server=""
 
-  if [ -d "/etc/letsencrypt/live/$primary" ]; then
-    log_ok "Сертификат для $primary уже существует"
-    return 0
-  fi
+  # Гарантированно убить временный http-server при любом выходе из функции
+  cleanup_acme_server() {
+    [ -n "$port_server" ] && kill "$port_server" 2>/dev/null
+    pkill -f "http.server 80" 2>/dev/null
+  }
+  trap cleanup_acme_server RETURN
 
   if [ -z "$CERT_METHOD" ]; then
     echo ""
@@ -557,23 +568,9 @@ issue_certificates() {
     reading "Ваш выбор (1/2):" CERT_METHOD
   fi
 
-  local cert_args=(-d "$primary" --agree-tos -m "admin@$base_domain" --no-eff-email --keep-until-expiring)
-  if [ "$CERT_METHOD" = "2" ]; then
-    if [ -z "$CF_DNS_TOKEN" ]; then
-      reading "Cloudflare API токен (для DNS-01):" CF_DNS_TOKEN
-    fi
-    mkdir -p /etc/letsencrypt/cloudflare
-    cat > /etc/letsencrypt/cloudflare/credentials <<EOF
-dns_cloudflare_api_token = $CF_DNS_TOKEN
-EOF
-    chmod 600 /etc/letsencrypt/cloudflare/credentials
-    certbot certonly --non-interactive --dns-cloudflare \
-      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare/credentials \
-      "${cert_args[@]}" || error "Не удалось выпустить сертификат DNS-01"
-  else
-    # HTTP-01: определяем webroot. Если есть системный nginx с acme-локацией — используем его,
-    # иначе стандартный /var/www/html
-    local webroot=""
+  # Определяем webroot для HTTP-01 (общий для всех доменов)
+  local webroot=""
+  if [ "$CERT_METHOD" != "2" ]; then
     if command -v nginx >/dev/null 2>&1 && [ -f /etc/nginx/nginx.conf ]; then
       local acme_root
       acme_root=$(grep -rA3 "acme-challenge" /etc/nginx/conf.d/ /etc/nginx/sites-enabled/ 2>/dev/null | grep "root" | awk '{print $2}' | sed 's/;//' | head -n1)
@@ -583,11 +580,54 @@ EOF
     fi
     [ -z "$webroot" ] && webroot="/var/www/html"
     mkdir -p "$webroot"
-    log_info "Выпуск сертификата HTTP-01 (webroot: $webroot)..."
-    certbot certonly --non-interactive --webroot -w "$webroot" \
-      "${cert_args[@]}" || error "Не удалось выпустить сертификат HTTP-01 (webroot $webroot). Порт 80 должен быть доступен снаружи"
+
+    # Если порт 80 никто не слушает — поднимаем временный webroot-сервер для HTTP-01
+    local port_used=""
+    if command -v ss >/dev/null 2>&1; then
+      port_used=$(ss -ltn 2>/dev/null | grep -E ':80\s' | head -1)
+    fi
+    if [ -z "$port_used" ]; then
+      log_info "Порт 80 свободен — запускаю временный сервер для верификации..."
+      mkdir -p "$webroot/.well-known/acme-challenge"
+      python3 -m http.server 80 --directory "$webroot" > /tmp/acme_http.log 2>&1 &
+      port_server=$!
+      sleep 2
+    fi
   fi
-  log_ok "Сертификат выпущен: $primary"
+
+  # Выпускаем отдельный сертификат на каждый домен
+  for d in "${domains[@]}"; do
+    if [ -d "/etc/letsencrypt/live/$d" ]; then
+      log_ok "Сертификат для $d уже существует"
+      continue
+    fi
+    local d_base=$(echo "$d" | sed -E 's/^[^.]+\.//')
+    local d_args=(-d "$d" --agree-tos -m "admin@$d_base" --no-eff-email --keep-until-expiring)
+    if [ "$CERT_METHOD" = "2" ]; then
+      if [ -z "$CF_DNS_TOKEN" ]; then
+        reading "Cloudflare API токен (для DNS-01):" CF_DNS_TOKEN
+      fi
+      mkdir -p /etc/letsencrypt/cloudflare
+      cat > /etc/letsencrypt/cloudflare/credentials <<EOF
+dns_cloudflare_api_token = $CF_DNS_TOKEN
+EOF
+      chmod 600 /etc/letsencrypt/cloudflare/credentials
+      log_info "Выпуск сертификата DNS-01 для $d..."
+      certbot certonly --non-interactive --dns-cloudflare \
+        --dns-cloudflare-credentials /etc/letsencrypt/cloudflare/credentials \
+        "${d_args[@]}" || { [ -n "$port_server" ] && kill "$port_server" 2>/dev/null; error "Не удалось выпустить сертификат DNS-01 для $d"; }
+    else
+      log_info "Выпуск сертификата HTTP-01 для $d (webroot: $webroot)..."
+      certbot certonly --non-interactive --webroot -w "$webroot" \
+        "${d_args[@]}" || { log_error "Не удалось выпустить сертификат HTTP-01 для $d";
+          [ -n "$port_server" ] && kill "$port_server" 2>/dev/null;
+          error "Не удалось выпустить сертификат HTTP-01 для $d. Порт 80 должен быть доступен снаружи"; }
+    fi
+  done
+
+  # Останавливаем временный сервер
+  [ -n "$port_server" ] && kill "$port_server" 2>/dev/null
+  log_ok "Сертификаты выпущены"
 }
 
 # ---------------------------------------------------------------------------
@@ -861,7 +901,7 @@ ssl_session_tickets off;
 
 server {
     server_name ${PANEL_DOMAIN};
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+    listen 443 ssl;
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${PANEL_DOMAIN}/fullchain.pem";
@@ -917,7 +957,7 @@ server {
 
 server {
     server_name ${SUB_DOMAIN};
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+    listen 443 ssl;
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${SUB_DOMAIN}/fullchain.pem";
@@ -948,7 +988,7 @@ server {
 
 server {
     server_name ${SELFSTEAL_DOMAIN};
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+    listen 443 ssl;
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${SELFSTEAL_DOMAIN}/fullchain.pem";
@@ -961,7 +1001,7 @@ server {
 }
 
 server {
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol default_server;
+    listen 443 ssl default_server;
     server_name _;
     add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
     ssl_reject_handshake on;
@@ -1001,30 +1041,39 @@ EOL
     error "Не удалось зарегистрировать панель"
   fi
 
-  # Получаем публичный ключ ноды
-  local pubkey
-  pubkey=$(get_public_key "http://$domain_url" "$token")
-  if [ -z "$pubkey" ]; then
-    error "Не удалось получить публичный ключ панели"
+  # В Remnawave API-эндпоинты (keygen, x25519, tokens, config-profiles и т.д.)
+  # требуют API-токен, созданный в дашборде. JWT от register для них не подходит.
+  echo ""
+  echo -e "${COLOR_GREEN}Панель зарегистрирована. Теперь нужно создать API-токен для работы скрипта.${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}Сделайте это в панели: Настройки (Settings) → API-токены (API Tokens) → Создать.${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}Оставьте все scope включёнными и скопируйте токен.${COLOR_RESET}"
+  reading "Вставьте API-токен панели:" api_token
+  if [ -z "$api_token" ]; then
+    error "API-токен обязателен для дальнейшей настройки"
   fi
 
-  # Создаём API-токен для страницы подписки
-  local sub_token
-  sub_token=$(create_api_token "http://$domain_url" "$token" "subscription-page")
-  if [ -n "$sub_token" ]; then
-    sed -i "s|REMNAWAVE_API_TOKEN=placeholder|REMNAWAVE_API_TOKEN=$sub_token|" docker-compose.yml
+  # Получаем публичный ключ ноды через API-токен
+  local pubkey
+  pubkey=$(get_public_key "http://$domain_url" "$api_token")
+  if [ -z "$pubkey" ]; then
+    error "Не удалось получить публичный ключ панели. Проверьте API-токен"
+  fi
+
+  # Используем тот же API-токен для страницы подписки
+  if [ -n "$api_token" ]; then
+    sed -i "s|REMNAWAVE_API_TOKEN=placeholder|REMNAWAVE_API_TOKEN=$api_token|" docker-compose.yml
     docker compose down remnawave-subscription-page > /dev/null 2>&1 &
     spinner $! "Ожидание..."
     docker compose up -d remnawave-subscription-page > /dev/null 2>&1 &
     spinner $! "Ожидание..."
   fi
 
-  # Сохраняем данные панели
-  save_panel_config "http://$domain_url" "$token"
-  echo -e "${COLOR_WHITE}SUPERADMIN_USERNAME=$SUPERADMIN_USERNAME${COLOR_RESET}" >> "$CONFIG_FILE"
-  echo -e "${COLOR_WHITE}SUPERADMIN_PASSWORD=$SUPERADMIN_PASSWORD${COLOR_RESET}" >> "$CONFIG_FILE"
-  echo -e "${COLOR_WHITE}COOKIE_1=$cookies_random1${COLOR_RESET}" >> "$CONFIG_FILE"
-  echo -e "${COLOR_WHITE}COOKIE_2=$cookies_random2${COLOR_RESET}" >> "$CONFIG_FILE"
+  # Сохраняем данные панели (для установки ноды используем API-токен)
+  save_panel_config "http://$domain_url" "$api_token"
+  echo -e "SUPERADMIN_USERNAME=$SUPERADMIN_USERNAME" >> "$CONFIG_FILE"
+  echo -e "SUPERADMIN_PASSWORD=$SUPERADMIN_PASSWORD" >> "$CONFIG_FILE"
+  echo -e "COOKIE_1=$cookies_random1" >> "$CONFIG_FILE"
+  echo -e "COOKIE_2=$cookies_random2" >> "$CONFIG_FILE"
 
   clear
   echo "================================================================"
