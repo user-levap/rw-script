@@ -512,7 +512,6 @@ issue_certificates() {
     return 0
   fi
 
-  mkdir -p /var/www/html
   if [ -z "$CERT_METHOD" ]; then
     echo ""
     echo -e "${COLOR_GREEN}Метод выпуска сертификата:${COLOR_RESET}"
@@ -535,8 +534,21 @@ EOF
       --dns-cloudflare-credentials /etc/letsencrypt/cloudflare/credentials \
       "${cert_args[@]}" || error "Не удалось выпустить сертификат DNS-01"
   else
-    certbot certonly --non-interactive --webroot -w /var/www/html \
-      "${cert_args[@]}" || error "Не удалось выпустить сертификат HTTP-01"
+    # HTTP-01: определяем webroot. Если есть системный nginx с acme-локацией — используем его,
+    # иначе стандартный /var/www/html
+    local webroot=""
+    if command -v nginx >/dev/null 2>&1 && [ -f /etc/nginx/nginx.conf ]; then
+      local acme_root
+      acme_root=$(grep -rA3 "acme-challenge" /etc/nginx/conf.d/ /etc/nginx/sites-enabled/ 2>/dev/null | grep "root" | awk '{print $2}' | sed 's/;//' | head -n1)
+      if [ -n "$acme_root" ]; then
+        webroot="$acme_root"
+      fi
+    fi
+    [ -z "$webroot" ] && webroot="/var/www/html"
+    mkdir -p "$webroot"
+    log_info "Выпуск сертификата HTTP-01 (webroot: $webroot)..."
+    certbot certonly --non-interactive --webroot -w "$webroot" \
+      "${cert_args[@]}" || error "Не удалось выпустить сертификат HTTP-01 (webroot $webroot). Порт 80 должен быть доступен снаружи"
   fi
   log_ok "Сертификат выпущен: $primary"
 }
@@ -1200,6 +1212,40 @@ EOL
 
   ufw allow from any to any port 2222 proto tcp > /dev/null 2>&1
   ufw reload > /dev/null 2>&1
+
+  # Проверка/освобождение портов 80/443 перед запуском docker-nginx
+  log_info "Проверка портов 80/443..."
+  local p80 p443
+  p80=$(ss -ltnp 2>/dev/null | grep -oP ':80\s.*pid=\K[0-9]+' | head -1)
+  p443=$(ss -ltnp 2>/dev/null | grep -oP ':443\s.*pid=\K[0-9]+' | head -1)
+  if [ -n "$p80" ] || [ -n "$p443" ]; then
+    local holder=""
+    [ -n "$p80" ] && holder+=" порт 80 (pid $p80)"
+    [ -n "$p443" ] && holder+=" порт 443 (pid $p443)"
+    local pname=""
+    for pid in $p80 $p443; do
+      [ -n "$pid" ] && pname+=" $(ps -p "$pid" -o comm= 2>/dev/null)"
+    done
+    echo ""
+    echo -e "${COLOR_YELLOW}Порты 80/443 заняты:$holder${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}Процесс(ы):$pname${COLOR_RESET}"
+    echo -e "${COLOR_RED}Для установки ноды нужно освободить порты (будет запущен nginx в docker).${COLOR_RESET}"
+    reading "Остановить эти процессы и продолжить? (y/N):" stop_conf
+    if [[ "$stop_conf" =~ ^[yY] ]]; then
+      for pid in $p80 $p443; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+      done
+      # Если это nginx — останавливаем системно
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop nginx 2>/dev/null
+        systemctl disable nginx 2>/dev/null
+      fi
+      sleep 2
+      log_ok "Порты освобождены"
+    else
+      error "Установка отменена. Освободите порты 80/443 вручную"
+    fi
+  fi
 
   log_info "Запуск контейнеров ноды..."
   docker compose up -d > /dev/null 2>&1 &
