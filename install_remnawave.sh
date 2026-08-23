@@ -192,7 +192,11 @@ load_panel_config() {
 get_panel_url() {
   load_panel_config
   if [ -z "$PANEL_URL" ]; then
-    reading "Адрес панели Remnawave (например https://panel.example.com или http://127.0.0.1:3000):" PANEL_URL
+    reading "Адрес панели Remnawave (например panel.example.com или 127.0.0.1:3000):" PANEL_URL
+  fi
+  # Нормализуем: добавляем https:// если нет протокола
+  if [[ "$PANEL_URL" != http://* && "$PANEL_URL" != https://* ]]; then
+    PANEL_URL="https://$PANEL_URL"
   fi
   echo "$PANEL_URL"
 }
@@ -1160,6 +1164,10 @@ install_node() {
   else
     # Адрес панели указывается БЕЗ https:// и слэшей
     reading "Адрес панели (без https://, например panel.npgift.ru):" panel_url
+    # Нормализуем: добавляем https:// если нет протокола
+    if [[ "$panel_url" != http://* && "$panel_url" != https://* ]]; then
+      panel_url="https://$panel_url"
+    fi
     reading "API ключ панели:" api_token
 
     reading "Домен ноды (без https://, например node.example.com):" node_domain
