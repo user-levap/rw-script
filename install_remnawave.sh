@@ -31,7 +31,7 @@
 #  SOFTWARE.
 # ============================================================================
 
-SCRIPT_VERSION="0.1.0-beta"
+SCRIPT_VERSION="0.1.1-beta"
 SCRIPT_URL="https://raw.githubusercontent.com/user-levap/rw-script/main/install_remnawave.sh"
 
 DIR_REMNAWAVE="/usr/local/remnawave_reverse/"
@@ -266,38 +266,40 @@ get_public_key() {
   echo "$resp" | jq -r '.response.pubKey // empty'
 }
 
-# Определяем версию панели по подключённым нодам (панель сама не отдаёт свою версию по API)
-detect_panel_node_version() {
-  local url=$1 token=$2
-  local resp=$(api_request "GET" "${url%/}/api/nodes" "$token")
-  echo "$resp" | jq -r '[.response[]? | select(.isConnected == true) | .versions.node // empty] | map(select(length > 0)) | if length > 0 then (sort | reverse | .[0]) else empty end' 2>/dev/null
-}
+# Единый список версий: последняя и далее от новой к старой (для панели и ноды)
+VERSION_LIST=("3.3.2" "3.3.1" "3.3.0" "3.2.3" "3.2.2" "3.2.1" "3.2.0" "3.1.0" "3.0.0" "2.8.1" "2.8.0" "2.7.4" "2.7.3" "2.7.2" "2.7.1" "2.7.0" "2.6.4" "2.6.3" "2.6.2" "2.6.1" "2.6.0" "2.5.7" "2.5.6" "2.5.5" "2.5.4" "2.5.3" "2.5.2" "2.5.1" "2.5.0")
 
-# Пользовательский выбор версии ноды (совпадает с версией панели).
-# Все echo меню идут в stderr; в stdout выводится только выбранная версия.
-select_node_version() {
-  local detected=$1
+# Общий выбор версии: 1 = последняя (по умолчанию), далее от новой к старой.
+# Меню выводится в stderr, в stdout — только выбранная версия.
+select_version() {
+  local label=$1
+  local target_var=$2
   echo "" >&2
-  echo -e "${COLOR_GREEN}Версия Remnawave Node (должна совпадать с версией панели):${COLOR_RESET}" >&2
+  echo -e "${COLOR_GREEN}Версия Remnawave ${label} (1 — последняя):${COLOR_RESET}" >&2
   echo "" >&2
   local i=1
   declare -A vmap
-  for v in "3.2.2" "3.3.2" "3.3.1" "3.3.0" "2.8.0" "2.7.0"; do
-    echo -e "${COLOR_YELLOW}$i. $v$([ "$v" = "$detected" ] && echo "  <- (текущая в панели)")${COLOR_RESET}" >&2
+  for v in "${VERSION_LIST[@]}"; do
+    if [ "$i" -eq 1 ]; then
+      echo -e "${COLOR_YELLOW}1. $v  <- (последняя)${COLOR_RESET}" >&2
+    else
+      echo -e "${COLOR_YELLOW}$i. $v${COLOR_RESET}" >&2
+    fi
     vmap[$i]="$v"
     ((i++))
   done
   echo -e "${COLOR_YELLOW}$i. Ввести свою${COLOR_RESET}" >&2
   local manual=$i
   echo "" >&2
-  reading "Выберите версию ноды:" vsel
+  reading "Выберите версию $label:" vsel
   if [ "$vsel" = "$manual" ]; then
-    reading "Введите версию (например 3.2.2):" NODE_IMAGE_VER
-    [ -z "$NODE_IMAGE_VER" ] && NODE_IMAGE_VER="3.2.2"
+    reading "Введите версию (например ${VERSION_LIST[0]}):" chosen_ver
+    [ -z "$chosen_ver" ] && chosen_ver="${VERSION_LIST[0]}"
   else
-    NODE_IMAGE_VER="${vmap[$vsel]:-3.2.2}"
+    chosen_ver="${vmap[$vsel]:-${VERSION_LIST[0]}}"
   fi
-  echo "$NODE_IMAGE_VER"
+  eval "$target_var=\"\$chosen_ver\""
+  echo "$chosen_ver"
 }
 
 generate_xray_keys() {
@@ -638,9 +640,22 @@ install_panel() {
   apply_bbr_sysctl
   mkdir -p "$PANEL_DIR" && cd "$PANEL_DIR" || exit 1
 
-  reading "Домен панели (например panel.example.com):" PANEL_DOMAIN
-  reading "Домен страницы подписки (например sub.example.com):" SUB_DOMAIN
-  reading "Домен ноды (selfsteal, например cdn.example.com):" SELFSTEAL_DOMAIN
+  # Комбинированный режим (панель + нода): nginx на unix-сокете, 443 держит xray ноды
+  local NGINX_LISTEN="443 ssl"
+  local NGINX_LISTEN_DEFAULT="443 ssl default_server"
+  if [ "${COMBINED_MODE:-0}" = "1" ]; then
+    NGINX_LISTEN="unix:/dev/shm/nginx.sock ssl proxy_protocol"
+    NGINX_LISTEN_DEFAULT="unix:/dev/shm/nginx.sock ssl proxy_protocol default_server"
+  fi
+
+  # Выбор версии панели
+  local PANEL_VERSION=""
+  select_version "Panel" "PANEL_VERSION"
+
+  # Домены указываются БЕЗ https:// и слэшей
+  reading "Домен панели (без https://, например panel.example.com):" PANEL_DOMAIN
+  reading "Домен страницы подписки (без https://, например sub.example.com):" SUB_DOMAIN
+  reading "Домен ноды (без https://, например cdn.example.com):" SELFSTEAL_DOMAIN
 
   if [ "$PANEL_DOMAIN" = "$SUB_DOMAIN" ] || [ "$PANEL_DOMAIN" = "$SELFSTEAL_DOMAIN" ] || [ "$SUB_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
     error "Домены должны быть уникальными"
@@ -762,7 +777,7 @@ services:
       retries: 3
 
   remnawave:
-    image: remnawave/backend:2
+    image: remnawave/backend:${PANEL_VERSION}
     container_name: remnawave
     hostname: remnawave
     <<: [*common, *logging, *env, *networks]
@@ -901,7 +916,7 @@ ssl_session_tickets off;
 
 server {
     server_name ${PANEL_DOMAIN};
-    listen 443 ssl;
+    listen ${NGINX_LISTEN};
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${PANEL_DOMAIN}/fullchain.pem";
@@ -957,7 +972,7 @@ server {
 
 server {
     server_name ${SUB_DOMAIN};
-    listen 443 ssl;
+    listen ${NGINX_LISTEN};
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${SUB_DOMAIN}/fullchain.pem";
@@ -988,7 +1003,7 @@ server {
 
 server {
     server_name ${SELFSTEAL_DOMAIN};
-    listen 443 ssl;
+    listen ${NGINX_LISTEN};
     http2 on;
 
     ssl_certificate "/etc/nginx/ssl/${SELFSTEAL_DOMAIN}/fullchain.pem";
@@ -1001,7 +1016,7 @@ server {
 }
 
 server {
-    listen 443 ssl default_server;
+    listen ${NGINX_LISTEN_DEFAULT};
     server_name _;
     add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
     ssl_reject_handshake on;
@@ -1088,6 +1103,32 @@ EOL
 }
 
 # ---------------------------------------------------------------------------
+# Установка панели + нода вместе (не рекомендуется разработчиками Remnawave)
+# ---------------------------------------------------------------------------
+install_panel_node() {
+  echo ""
+  echo -e "${COLOR_RED}ВНИМАНИЕ!${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}Установка панели и ноды на одном сервере официально не предусмотрена разработчиками Remnawave.${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}Такая схема может работать не корректно или не стабильно. Используйте на свой риск.${COLOR_RESET}"
+  echo ""
+  reading "Продолжить установку панель + нода? (y/N):" comb_confirm
+  if [[ ! "$comb_confirm" =~ ^[yY] ]]; then
+    log_warn "Установка отменена"
+    return
+  fi
+
+  # Комбинированный режим: последние версии автоматически, нода на том же сервере
+  ALLOW_LOCAL_NODE=1
+  COMBINED_MODE=1
+  COMBINED_NODE_NAME="LocalNode"
+
+  install_panel
+  install_node
+
+  log_warn "Установка панель + нода завершена. Помните: такая схема неофициальна и может быть нестабильной."
+}
+
+# ---------------------------------------------------------------------------
 # Установка ноды (локальная/удалённая панель)
 # ---------------------------------------------------------------------------
 install_node() {
@@ -1095,45 +1136,41 @@ install_node() {
   apply_bbr_sysctl
   mkdir -p "$NODE_DIR" && cd "$NODE_DIR" || exit 1
 
-  echo -e "${COLOR_RED}Панель Remnawave уже установлена на этом сервере?${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}1. Да - нода на том же сервере, что и панель${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}2. Нет - нода на отдельном сервере${COLOR_RESET}"
-  reading "Ваш выбор (1/2):" NODE_PANEL_LOCAL
+  # Если на сервере уже есть панель (и это не комбинированная установка) - отказываемся
+  if [ "${ALLOW_LOCAL_NODE:-0}" = "0" ]; then
+    if docker ps -q --filter "ancestor=remnawave/backend" 2>/dev/null | grep -q . || \
+       docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^remnawave$'; then
+      error "На этом сервере обнаружена панель Remnawave. Панель и нода вместе ставятся пунктом Установить панель + нода. Отдельная установка ноды здесь невозможна."
+    fi
+  fi
 
   local panel_url="" api_token="" node_domain="" node_name=""
   local secret_key=""
 
-  if [ "$NODE_PANEL_LOCAL" = "1" ]; then
-    if ! panel_dir_exists && ! docker ps -q --filter "ancestor=remnawave/backend:2" | grep -q .; then
-      error "Панель не установлена на этом сервере. Сначала установите панель (раздел Remnawave)"
-    fi
+  if [ "${ALLOW_LOCAL_NODE:-0}" = "1" ]; then
+    # Комбинированная установка: нода на том же сервере, что и панель
     panel_url="http://127.0.0.1:3000"
-    # Получаем токен админа из сохранённой конфигурации
     load_panel_config
     api_token="$API_TOKEN"
-    if [ -z "$api_token" ]; then
-      reading "API ключ панели (или админ-токен):" api_token
-    fi
+    node_domain="$SELFSTEAL_DOMAIN"
+    node_name="${COMBINED_NODE_NAME:-Node}"
+    # Последняя версия ноды (автоматически)
+    local NODE_IMAGE="remnawave/node:${VERSION_LIST[0]}"
+    log_ok "Будет установлена нода: $NODE_IMAGE"
   else
-    reading "Адрес панели (https://panel.example.com):" panel_url
+    # Адрес панели указывается БЕЗ https:// и слэшей
+    reading "Адрес панели (без https://, например panel.npgift.ru):" panel_url
     reading "API ключ панели:" api_token
-  fi
 
-  reading "Домен ноды (selfsteal, например cdn.example.com):" node_domain
-  reading "Название ноды (например Russia 2):" node_name
+    reading "Домен ноды (без https://, например node.example.com):" node_domain
+    reading "Название ноды (например Russia 2):" node_name
 
-  # Определяем совместимую версию ноды
-  local panel_ver=""
-  panel_ver=$(detect_panel_node_version "$panel_url" "$api_token")
-  if [ -n "$panel_ver" ]; then
-    log_info "Обнаружена версия ноды в панели: $panel_ver"
-  else
-    log_warn "Не удалось определить версию панели (нет подключённых нод)"
+    # Простой выбор версии ноды на усмотрение пользователя
+    local NODE_IMAGE_VER=""
+    select_version "Node" "NODE_IMAGE_VER"
+    local NODE_IMAGE="remnawave/node:$NODE_IMAGE_VER"
+    log_ok "Будет установлена нода: $NODE_IMAGE"
   fi
-  local node_ver
-  node_ver=$(select_node_version "$panel_ver")
-  local NODE_IMAGE="remnawave/node:$node_ver"
-  log_ok "Будет установлена нода: $NODE_IMAGE"
 
   # Генерируем приватный ключ xray
   log_info "Генерация Xray ключей..."
@@ -1179,12 +1216,7 @@ install_node() {
 
   # Получаем public key (для кампании)
   log_info "Получение публичного ключа..."
-  if [ "$NODE_PANEL_LOCAL" = "1" ]; then
-    secret_key=$(get_public_key "$panel_url" "$api_token")
-  else
-    # Для удалённой панели берём публичный ключ из keygen
-    secret_key=$(get_public_key "$panel_url" "$api_token")
-  fi
+  secret_key=$(get_public_key "$panel_url" "$api_token")
 
   if [ -z "$secret_key" ]; then
     reading "Публичный ключ панели (из панели: Домены -> нода):" secret_key
@@ -1196,7 +1228,7 @@ install_node() {
     node_cert="$node_domain"
   else
     # Пробуем выпустить/обнаружить
-    if [ "$NODE_PANEL_LOCAL" = "1" ] || command -v certbot >/dev/null 2>&1; then
+    if command -v certbot >/dev/null 2>&1; then
       mkdir -p /var/www/html
       issue_certificates "$node_domain"
       node_cert="$node_domain"
@@ -1204,6 +1236,29 @@ install_node() {
   fi
 
   # dnscrypt... соберем docker-compose ноды
+  if [ "${ALLOW_LOCAL_NODE:-0}" = "1" ]; then
+    # Комбинированный режим: нода добавляется в compose панели (общий nginx на сокете уже есть)
+    cd "$PANEL_DIR" || exit 1
+    cat >> docker-compose.yml <<EOL
+
+  remnanode:
+    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
+    container_name: remnanode
+    hostname: remnanode
+    <<: [*common, *logging]
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_PORT=2222
+      - SECRET_KEY=$secret_key
+    volumes:
+      - /dev/shm:/dev/shm:rw
+EOL
+    log_info "Запуск контейнеров панели + ноды..."
+    docker compose up -d > /dev/null 2>&1 &
+    spinner $! "Ожидание..."
+  else
   cat > docker-compose.yml <<EOL
 x-common: &common
   ulimits:
@@ -1350,6 +1405,7 @@ EOL
   log_info "Запуск контейнеров ноды..."
   docker compose up -d > /dev/null 2>&1 &
   spinner $! "Ожидание..."
+  fi
 
   # Сохраняем конфигурацию ноды
   echo -e "NODE_DOMAIN=$node_domain" >> "$CONFIG_FILE"
@@ -1915,7 +1971,7 @@ show_menu() {
   echo -e "${COLOR_GREEN}Remnawave All-in-One Manager v${SCRIPT_VERSION}${COLOR_RESET}"
   echo -e "${COLOR_GRAY}----------------------------------------------------------------${COLOR_RESET}"
   echo ""
-  echo -e "${COLOR_YELLOW}1. Remnawave (панель и страница подписки)${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}1. Remnawave${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}2. Remnanode${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}3. Управление сертификатами${COLOR_RESET}"
@@ -1944,11 +2000,11 @@ panel_menu() {
   echo -e "${COLOR_GREEN}Remnawave (панель и страница подписки)${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}1. Установить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}2. Запустить / Остановить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}3. Обновить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}4. Переустановить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}5. Логи${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}6. Доступ к панели (8443 open/close)${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}2. Установить панель + нода${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}3. Запустить / Остановить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}4. Обновить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}5. Переустановить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}6. Логи${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}7. Удалить${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
@@ -1957,8 +2013,9 @@ panel_menu() {
   reading "Выберите пункт:" opt
   case $opt in
     1) install_panel ;;
-    2)
-      if docker ps -q --filter "ancestor=remnawave/backend:2" | grep -q .; then
+    2) install_panel_node ;;
+    3)
+      if docker ps -q --filter "ancestor=remnawave/backend" | grep -q . || docker ps --format '{{.Names}}' | grep -q '^remnawave$'; then
         log_info "Панель запущена. Останавливаю..."
         compose_stop panel
       else
@@ -1966,10 +2023,9 @@ panel_menu() {
         compose_start panel
       fi
       ;;
-    3) compose_update panel ;;
-    4) compose_reinstall panel ;;
-    5) compose_logs panel ;;
-    6) panel_access_menu ;;
+    4) compose_update panel ;;
+    5) compose_reinstall panel ;;
+    6) compose_logs panel ;;
     7)
       compose_remove panel
       log_warn "Рекомендуется также удалить записи в панели на сайте (вручную)"
@@ -1979,27 +2035,6 @@ panel_menu() {
     *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
   esac
   panel_menu
-}
-
-panel_access_menu() {
-  echo ""
-  echo -e "${COLOR_GREEN}Доступ к панели через порт 8443${COLOR_RESET}"
-  echo ""
-  echo -e "${COLOR_YELLOW}1. Открыть доступ (8443)${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}2. Закрыть доступ (8443)${COLOR_RESET}"
-  echo ""
-  echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
-  echo ""
-  reading "Выбор:" opt
-  case $opt in
-    1) open_panel_access ;;
-    2) close_panel ;;
-    9) panel_menu ;;
-    0) echo -e "${COLOR_GRAY}До свидания${COLOR_RESET}"; exit 0 ;;
-    *) echo -e "${COLOR_RED}Неверный выбор${COLOR_RESET}"; sleep 1 ;;
-  esac
-  panel_access_menu
 }
 
 node_menu() {
