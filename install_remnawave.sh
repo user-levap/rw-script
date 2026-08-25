@@ -225,6 +225,7 @@ api_request() {
     -H "X-Forwarded-For: $host"
     -H "X-Forwarded-Proto: https"
     -H "X-Forwarded-Host: $host"
+    -H "X-Remnawave-Client-Type: browser"
   )
   if [ -n "$token" ]; then
     headers+=(-H "Authorization: Bearer $token")
@@ -270,37 +271,23 @@ get_public_key() {
   echo "$resp" | jq -r '.response.pubKey // empty'
 }
 
-# Единый список версий: последняя и далее от новой к старой (для панели и ноды)
-VERSION_LIST=("3.3.2" "3.3.1" "3.3.0" "3.2.3" "3.2.2" "3.2.1" "3.2.0" "3.1.0" "3.0.0" "2.8.1" "2.8.0" "2.7.4" "2.7.3" "2.7.2" "2.7.1" "2.7.0" "2.6.4" "2.6.3" "2.6.2" "2.6.1" "2.6.0" "2.5.7" "2.5.6" "2.5.5" "2.5.4" "2.5.3" "2.5.2" "2.5.1" "2.5.0")
-
-# Общий выбор версии: 1 = последняя (по умолчанию), далее от новой к старой.
-# Меню выводится в stderr, в stdout — только выбранная версия.
+# Выбор версии: 1 = последняя (latest), 2 = ввести номер вручную.
+# Меню в stderr, в stdout — только выбранное значение (latest или номер).
 select_version() {
   local label=$1
   local target_var=$2
   echo "" >&2
-  echo -e "${COLOR_GREEN}Версия Remnawave ${label} (1 — последняя):${COLOR_RESET}" >&2
+  echo -e "${COLOR_GREEN}Версия Remnawave ${label}:${COLOR_RESET}" >&2
   echo "" >&2
-  local i=1
-  declare -A vmap
-  for v in "${VERSION_LIST[@]}"; do
-    if [ "$i" -eq 1 ]; then
-      echo -e "${COLOR_YELLOW}1. $v  <- (последняя)${COLOR_RESET}" >&2
-    else
-      echo -e "${COLOR_YELLOW}$i. $v${COLOR_RESET}" >&2
-    fi
-    vmap[$i]="$v"
-    ((i++))
-  done
-  echo -e "${COLOR_YELLOW}$i. Ввести свою${COLOR_RESET}" >&2
-  local manual=$i
+  echo -e "${COLOR_YELLOW}1. Последняя (latest)${COLOR_RESET}" >&2
+  echo -e "${COLOR_YELLOW}2. Ввести номер версии (например 3.2.2)${COLOR_RESET}" >&2
   echo "" >&2
-  reading "Выберите версию $label:" vsel
-  if [ "$vsel" = "$manual" ]; then
-    reading "Введите версию (например ${VERSION_LIST[0]}):" chosen_ver
-    [ -z "$chosen_ver" ] && chosen_ver="${VERSION_LIST[0]}"
+  reading "Выберите вариант:" vs_opt
+  if [ "$vs_opt" = "2" ]; then
+    reading "Введите номер версии (например 3.2.2):" chosen_ver
+    [ -z "$chosen_ver" ] && chosen_ver="latest"
   else
-    chosen_ver="${vmap[$vsel]:-${VERSION_LIST[0]}}"
+    chosen_ver="latest"
   fi
   eval "$target_var=\"\$chosen_ver\""
   echo "$chosen_ver"
@@ -662,7 +649,7 @@ install_panel() {
   curl -fsSL "https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml" -o docker-compose.yml || error "Не удалось скачать docker-compose.yml"
   curl -fsSL "https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample" -o .env || error "Не удалось скачать .env.sample"
   # Подставляем выбранную версию панели в образ backend
-  sed -i "s|image: remnawave/backend:[0-9]|image: remnawave/backend:${PANEL_VERSION}|" docker-compose.yml
+  sed -i "s|image: remnawave/backend:.*|image: remnawave/backend:${PANEL_VERSION}|" docker-compose.yml
 
   # 2. Генерируем секреты
   sed -i "s/^APP_SECRET=.*/APP_SECRET=$(openssl rand -hex 64)/" .env
@@ -705,13 +692,14 @@ install_panel() {
     error "Не удалось зарегистрировать панель"
   fi
 
-  # 6. API-токен из дашборда (нужен для API-операций и подписки)
-  echo ""
-  echo -e "${COLOR_GREEN}Панель зарегистрирована. Создайте API-токен в панели: Настройки → API-токены.${COLOR_RESET}"
-  reading "Вставьте API-токен панели:" api_token
+  # 6. Создаём API-токен автоматически через суперадмин-JWT
+  # (заголовок X-Remnawave-Client-Type: browser позволяет UI-операции)
+  local api_token
+  api_token=$(create_api_token "http://$domain_url" "$token" "subscription-page")
   if [ -z "$api_token" ]; then
-    error "API-токен обязателен"
+    error "Не удалось создать API-токен автоматически"
   fi
+  log_ok "API-токен создан"
 
   # 7. Reverse proxy (Nginx) + SSL по официальной документации
   install_panel_nginx "$PANEL_DOMAIN" "$SUB_DOMAIN" "$api_token"
@@ -935,7 +923,7 @@ install_node() {
     node_domain="$SELFSTEAL_DOMAIN"
     node_name="${COMBINED_NODE_NAME:-Node}"
     # Последняя версия ноды (автоматически)
-    local NODE_IMAGE="remnawave/node:${VERSION_LIST[0]}"
+    local NODE_IMAGE="remnawave/node:latest"
     log_ok "Будет установлена нода: $NODE_IMAGE"
   else
     # Адрес панели указывается БЕЗ https:// и слэшей
@@ -1026,7 +1014,7 @@ install_node() {
     cat >> docker-compose.yml <<EOL
 
   remnanode:
-    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
+    image: ${NODE_IMAGE:-remnawave/node:latest}
     container_name: remnanode
     hostname: remnanode
     <<: [*common, *logging]
@@ -1079,7 +1067,7 @@ EOL
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
 
   remnanode:
-    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
+    image: ${NODE_IMAGE:-remnawave/node:latest}
     container_name: remnanode
     hostname: remnanode
     <<: [*common, *logging]
@@ -1099,7 +1087,7 @@ EOL
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
 
   remnanode:
-    image: ${NODE_IMAGE:-remnawave/node:3.2.2}
+    image: ${NODE_IMAGE:-remnawave/node:latest}
     container_name: remnanode
     hostname: remnanode
     <<: [*common, *logging]
