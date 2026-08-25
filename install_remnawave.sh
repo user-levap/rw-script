@@ -730,20 +730,18 @@ install_panel_nginx() {
   local ndir="$PANEL_DIR/nginx"
   mkdir -p "$ndir" && cd "$ndir" || exit 1
 
-  # Устанавливаем acme.sh
-  if [ ! -f /root/.acme.sh/acme.sh ]; then
-    curl https://get.acme.sh | sh -s email="admin@$pdom" > /dev/null 2>&1
-  fi
-  # Сертификат панели
-  /root/.acme.sh/acme.sh --issue --standalone -d "$pdom" \
-    --key-file "$ndir/privkey.key" --fullchain-file "$ndir/fullchain.pem" \
-    --alpn --tlsport 8443 > /dev/null 2>&1 || \
-    log_warn "acme.sh панель: проверьте порт 8443"
-  # Сертификат подписки
-  /root/.acme.sh/acme.sh --issue --standalone -d "$sdom" \
-    --key-file "$ndir/subdomain_privkey.key" --fullchain-file "$ndir/subdomain_fullchain.pem" \
-    --alpn --tlsport 8443 > /dev/null 2>&1 || \
-    log_warn "acme.sh подписка: проверьте порт 8443"
+  # Сертификаты через webroot (HTTP-01 на порт 80) — надёжно, без зависимостей от 8443
+  CERT_METHOD=1
+  # Удаляем возможные пустые каталоги от прошлых неудачных попыток acme.sh
+  rm -rf "$ndir/fullchain.pem" "$ndir/privkey.key" "$ndir/subdomain_fullchain.pem" "$ndir/subdomain_privkey.key" 2>/dev/null
+  issue_certificates "$pdom"
+  issue_certificates "$sdom"
+  # Копируем сертификаты в каталог nginx
+  cp -f "/etc/letsencrypt/live/$pdom/fullchain.pem" "$ndir/fullchain.pem"
+  cp -f "/etc/letsencrypt/live/$pdom/privkey.pem" "$ndir/privkey.key"
+  cp -f "/etc/letsencrypt/live/$sdom/fullchain.pem" "$ndir/subdomain_fullchain.pem"
+  cp -f "/etc/letsencrypt/live/$sdom/privkey.pem" "$ndir/subdomain_privkey.key"
+  log_ok "Сертификаты выпущены и скопированы"
 
   cat > nginx.conf <<EOL
 upstream remnawave {
