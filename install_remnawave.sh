@@ -661,6 +661,8 @@ install_panel() {
   log_info "Скачивание официальных файлов Remnawave Panel..."
   curl -fsSL "https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml" -o docker-compose.yml || error "Не удалось скачать docker-compose.yml"
   curl -fsSL "https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample" -o .env || error "Не удалось скачать .env.sample"
+  # Подставляем выбранную версию панели в образ backend
+  sed -i "s|image: remnawave/backend:[0-9]|image: remnawave/backend:${PANEL_VERSION}|" docker-compose.yml
 
   # 2. Генерируем секреты
   sed -i "s/^APP_SECRET=.*/APP_SECRET=$(openssl rand -hex 64)/" .env
