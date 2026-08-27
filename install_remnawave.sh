@@ -251,11 +251,11 @@ randomhtml() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>npgift.ru</title>
+<title>example.com</title>
 <style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#333;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center;padding:40px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.05)}h1{margin:0 0 8px;font-size:22px}p{color:#888;margin:0}</style>
 </head>
 <body>
-<div class="card"><h1>npgift.ru</h1><p>Этот домен обслуживается сервером.</p></div>
+<div class="card"><h1>example.com</h1><p>Этот домен обслуживается сервером.</p></div>
 </body>
 </html>
 EOF
@@ -900,7 +900,7 @@ install_node() {
     log_ok "Будет установлена нода: $NODE_IMAGE"
   else
     # Адрес панели указывается БЕЗ https:// и слэшей
-    reading "Адрес панели (без https://, например panel.npgift.ru):" panel_url
+    reading "Адрес панели (без https://, например panel.example.com):" panel_url
     # Нормализуем: добавляем https:// если нет протокола
     if [[ "$panel_url" != http://* && "$panel_url" != https://* ]]; then
       panel_url="https://$panel_url"
