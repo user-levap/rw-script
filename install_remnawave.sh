@@ -423,9 +423,9 @@ update_squad() {
 
 create_api_token() {
   local url=$1 token=$2 name=$3
-  local body='{"name":"'"$name"'","expiresInDays":365,"scopes":["*"]}'
+  # Токен до 2099 года (~26700 дней от 2026)
+  local body='{"name":"'"$name"'","expiresInDays":26700,"scopes":["*"]}'
   local resp=$(api_request "POST" "${url%/}/api/tokens" "$token" "$body")
-  echo "DEBUG create_api_token resp: ${resp:0:300}" >&2
   echo "$resp" | jq -r '.response.token // empty'
 }
 
@@ -872,31 +872,6 @@ EOL
 }
 
 # Установка панели + нода вместе (не рекомендуется разработчиками Remnawave)
-install_panel_node() {
-  echo ""
-  echo -e "${COLOR_RED}ВНИМАНИЕ!${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}Установка панели и ноды на одном сервере официально не предусмотрена разработчиками Remnawave.${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}Такая схема может работать не корректно или не стабильно. Используйте на свой риск.${COLOR_RESET}"
-  echo ""
-  reading "Продолжить установку панель + нода? (y/N):" comb_confirm
-  if [[ ! "$comb_confirm" =~ ^[yY] ]]; then
-    log_warn "Установка отменена"
-    return
-  fi
-
-  ALLOW_LOCAL_NODE=1
-  COMBINED_MODE=1
-  COMBINED_NODE_NAME="LocalNode"
-
-  install_panel
-  install_node
-
-  log_warn "Установка панель + нода завершена. Помните: такая схема неофициальна и может быть нестабильной."
-}
-
-# ---------------------------------------------------------------------------
-# Установка ноды (локальная/удалённая панель)
-# ---------------------------------------------------------------------------
 install_node() {
   ensure_packages
   apply_bbr_sysctl
@@ -906,7 +881,7 @@ install_node() {
   if [ "${ALLOW_LOCAL_NODE:-0}" = "0" ]; then
     if docker ps -q --filter "ancestor=remnawave/backend" 2>/dev/null | grep -q . || \
        docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^remnawave$'; then
-      error "На этом сервере обнаружена панель Remnawave. Панель и нода вместе ставятся пунктом Установить панель + нода. Отдельная установка ноды здесь невозможна."
+      error "На этом сервере обнаружена панель Remnawave. Устанавливайте ноду на отдельном сервере."
     fi
   fi
 
@@ -1770,12 +1745,11 @@ panel_menu() {
   echo -e "${COLOR_GREEN}Remnawave (панель и страница подписки)${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}1. Установить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}2. Установить панель + нода${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}3. Запустить / Остановить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}4. Обновить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}5. Переустановить${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}6. Логи${COLOR_RESET}"
-  echo -e "${COLOR_YELLOW}7. Удалить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}2. Запустить / Остановить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}3. Обновить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}4. Переустановить${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}5. Логи${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}6. Удалить${COLOR_RESET}"
   echo ""
   echo -e "${COLOR_YELLOW}9. Назад${COLOR_RESET}"
   echo -e "${COLOR_YELLOW}0. Выход${COLOR_RESET}"
@@ -1783,8 +1757,7 @@ panel_menu() {
   reading "Выберите пункт:" opt
   case $opt in
     1) install_panel ;;
-    2) install_panel_node ;;
-    3)
+    2)
       if docker ps -q --filter "ancestor=remnawave/backend" | grep -q . || docker ps --format '{{.Names}}' | grep -q '^remnawave$'; then
         log_info "Панель запущена. Останавливаю..."
         compose_stop panel
@@ -1793,10 +1766,10 @@ panel_menu() {
         compose_start panel
       fi
       ;;
-    4) compose_update panel ;;
-    5) compose_reinstall panel ;;
-    6) compose_logs panel ;;
-    7)
+    3) compose_update panel ;;
+    4) compose_reinstall panel ;;
+    5) compose_logs panel ;;
+    6)
       compose_remove panel
       log_warn "Рекомендуется также удалить записи в панели на сайте (вручную)"
       ;;
