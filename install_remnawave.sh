@@ -240,27 +240,30 @@ api_request() {
 panel_has_nginx() { [ -f "$PANEL_DIR/nginx.conf" ]; }
 panel_has_caddy() { [ -f "$PANEL_DIR/Caddyfile" ]; }
 
-# Генерация/установка рандомной заглушки в /var/www/html
+# Установка рандомной заглушки (из шаблонов rw-templates на GitHub)
+TEMPLATES_BASE="https://raw.githubusercontent.com/user-levap/rw-templates/main/templates"
 randomhtml() {
   mkdir -p /var/www/html
-  if [ -z "$(find /var/www/html -maxdepth 1 -name 'index.html' 2>/dev/null)" ] || [ ! -s /var/www/html/index.html ]; then
-    log_info "Установка заглушки сайта..."
+  log_info "Загрузка случайного шаблона заглушки..."
+  local cats=("video" "games" "cloud")
+  local rc=$((RANDOM % 3))
+  local rn=$((RANDOM % 5 + 1))
+  local url="$TEMPLATES_BASE/${cats[$rc]}/$rn.html"
+  if curl -fsSL --max-time 20 "$url" -o /tmp/template.html 2>/dev/null; then
+    cp -f /tmp/template.html /var/www/html/index.html
+    rm -f /tmp/template.html
+    chmod 644 /var/www/html/index.html
+    log_ok "Установлен шаблон: ${cats[$rc]}/$rn.html"
+  else
+    # Fallback: простая заглушка
+    log_warn "Не удалось скачать шаблон, ставлю простую заглушку"
     cat > /var/www/html/index.html <<'EOF'
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>npgift.ru</title>
-<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#333;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center;padding:40px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.05)}h1{margin:0 0 8px;font-size:22px}p{color:#888;margin:0}</style>
-</head>
-<body>
-<div class="card"><h1>npgift.ru</h1><p>Этот домен обслуживается сервером.</p></div>
-</body>
-</html>
+<html lang="en"><head><meta charset="utf-8"><title>Welcome</title>
+<style>body{font-family:sans-serif;background:#f5f5f5;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}h1{color:#333}</style>
+</head><body><h1>Welcome</h1></body></html>
 EOF
     chmod 644 /var/www/html/index.html
-    log_ok "Заглушка установлена"
   fi
 }
 
@@ -322,37 +325,125 @@ create_config_profile() {
   local url=$1 token=$2 name=$3 domain=$4 private_key=$5
   local dest="${6:-/dev/shm/nginx.sock}"
   local xver="${7:-1}"
+  # Обфускация: случайные значения
   local short_id=$(openssl rand -hex 8)
-  # Уникальный тег на основе имени ноды (защита от конфликта тегов в панели)
-  local tag=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
-  [ -z "$tag" ] && tag="node"
-  tag="${tag}-vless-443"
+  local spider_path="/$(openssl rand -hex 8)"
+  local grpc_service="g$(openssl rand -hex 6)"
+  local xhttp_path="/$(openssl rand -hex 8)"
+  local hysteria_obfs=$(openssl rand -hex 12)
+  # Список популярных целей для grpc/xhttp reality (fallback)
+  local targets=("www.apple.com:443" "www.microsoft.com:443" "www.google.com:443" "www.amazon.com:443" "www.samsung.com:443" "www.oracle.com:443")
+  local tg=$((RANDOM % ${#targets[@]}))
+  local grpc_target="${targets[$tg]}"
+  local xhttp_target="${targets[$((RANDOM % ${#targets[@]}))]}"
+  # Уникальный префикс тегов на основе имени ноды
+  local pre=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
+  [ -z "$pre" ] && pre="node"
   local body
-  body=$(jq -n --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" --arg short_id "$short_id" --arg tag "$tag" --arg dest "$dest" --arg xver "$xver" '{
+  body=$(jq -n \
+    --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" \
+    --arg short_id "$short_id" --arg spider_path "$spider_path" --arg dest "$dest" --arg xver "$xver" \
+    --arg pre "$pre" --arg grpc_service "$grpc_service" --arg xhttp_path "$xhttp_path" \
+    --arg grpc_target "$grpc_target" --arg xhttp_target "$xhttp_target" --arg hysteria_obfs "$hysteria_obfs" '{
     name: $name,
     config: {
       log: { loglevel: "warning" },
       dns: { queryStrategy: "UseIPv4", servers: [{ address: "https://dns.google/dns-query", skipFallback: false }] },
-      inbounds: [{
-        tag: $tag,
-        port: 443,
-        protocol: "vless",
-        settings: { clients: [], decryption: "none" },
-        sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] },
-        streamSettings: {
-          network: "tcp",
-          security: "reality",
-          realitySettings: {
-            show: false,
-            xver: ($xver | tonumber),
-            dest: $dest,
-            spiderX: "",
-            shortIds: [$short_id],
-            privateKey: $private_key,
-            serverNames: [$domain]
+      inbounds: [
+        {
+          tag: ($pre + "-vless-443"),
+          port: 443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] },
+          streamSettings: {
+            network: "tcp",
+            security: "reality",
+            realitySettings: {
+              show: false,
+              xver: ($xver | tonumber),
+              dest: $dest,
+              spiderX: $spider_path,
+              shortIds: [$short_id],
+              privateKey: $private_key,
+              serverNames: [$domain]
+            }
+          }
+        },
+        {
+          tag: ($pre + "-grpc-8443"),
+          port: 8443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] },
+          streamSettings: {
+            network: "grpc",
+            security: "reality",
+            grpcSettings: { multiMode: false, serviceName: $grpc_service },
+            realitySettings: {
+              show: false,
+              xver: 0,
+              dest: $grpc_target,
+              spiderX: "/",
+              shortIds: [$short_id],
+              privateKey: $private_key,
+              serverNames: [$domain]
+            }
+          }
+        },
+        {
+          tag: ($pre + "-xhttp-4443"),
+          port: 4443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] },
+          streamSettings: {
+            network: "xhttp",
+            security: "reality",
+            xhttpSettings: {
+              mode: "auto",
+              path: $xhttp_path,
+              noGRPCHeader: false,
+              xPaddingBytes: "100-1000",
+              scMaxBufferedPosts: 30,
+              scMaxEachPostBytes: "1000000"
+            },
+            realitySettings: {
+              show: false,
+              xver: 0,
+              dest: $xhttp_target,
+              spiderX: "/",
+              shortIds: [$short_id],
+              privateKey: $private_key,
+              serverNames: [$domain]
+            }
+          }
+        },
+        {
+          tag: ($pre + "-hy2-8443"),
+          port: 8443,
+          protocol: "hysteria",
+          settings: { clients: [], version: 2 },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] },
+          streamSettings: {
+            network: "hysteria",
+            security: "tls",
+            tlsSettings: {
+              alpn: ["h3"],
+              certificates: [
+                { keyFile: "/dev/shm/hysteria_key.pem", certificateFile: "/dev/shm/hysteria_cert.pem" }
+              ]
+            },
+            hysteriaSettings: {
+              version: 2,
+              obfs: "salamander",
+              password: $hysteria_obfs,
+              up: "50-100 mbps",
+              down: "200-500 mbps"
+            }
           }
         }
-      }],
+      ],
       outbounds: [
         { tag: "DIRECT", protocol: "freedom" },
         { tag: "BLOCK", protocol: "blackhole" }
@@ -367,24 +458,27 @@ create_config_profile() {
   }')
   local resp=$(api_request "POST" "${url%/}/api/config-profiles" "$token" "$body")
   local puuid=$(echo "$resp" | jq -r '.response.uuid // empty' | head -1)
-  local iuuid=$(echo "$resp" | jq -r '.response.inbounds[0].uuid // empty' | head -1)
-  if [ -z "$puuid" ] || [ -z "$iuuid" ]; then
+  local iuuids=$(echo "$resp" | jq -r '.response.inbounds[].uuid' 2>/dev/null | tr '\n' ' ')
+  if [ -z "$puuid" ] || [ -z "$iuuids" ]; then
     echo "ERROR: $resp" >&2
     return 1
   fi
-  echo "$puuid $iuuid"
+  echo "$puuid $iuuids"
 }
 
 create_node() {
-  local url=$1 token=$2 profile_uuid=$3 inbound_uuid=$4 address=$5 name=$6
+  local url=$1 token=$2 profile_uuid=$3 address=$5 name=$6
+  # inbound_uuid теперь список (разделяется пробелом) в $4
+  local iu_list=$4
   local body
-  body=$(jq -n --arg name "$name" --arg address "$address" --arg pu "$profile_uuid" --arg iu "$inbound_uuid" '{
+  body=$(jq -n --arg name "$name" --arg address "$address" --arg pu "$profile_uuid" \
+    --argjson ius "$(echo "$iu_list" | jq -Rc 'split(" ") | map(select(length>0))')" '{
     name: $name,
     address: $address,
     port: 2222,
     configProfile: {
       activeConfigProfileUuid: $pu,
-      activeInbounds: [$iu]
+      activeInbounds: $ius
     },
     isTrafficTrackingActive: false,
     trafficLimitBytes: 0,
@@ -1030,37 +1124,67 @@ install_node() {
     REALITY_DEST="127.0.0.1:80"
     REALITY_XVER=0
   fi
-  log_info "Создание конфиг-профиля..."
-  local profile_uuid inbound_uuid
+  log_info "Создание конфиг-профиля (vless reality tcp + grpc + xhttp + hysteria2)..."
+  local profile_uuid inbound_uuids
   local cp_err=""
-  read profile_uuid inbound_uuid <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private" "$REALITY_DEST" "$REALITY_XVER" 2>/tmp/cp_err.txt)
+  read profile_uuid inbound_uuids <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private" "$REALITY_DEST" "$REALITY_XVER" 2>/tmp/cp_err.txt)
   cp_err=$(cat /tmp/cp_err.txt 2>/dev/null)
-  if [ -z "$profile_uuid" ] || [ -z "$inbound_uuid" ]; then
+  if [ -z "$profile_uuid" ] || [ -z "$inbound_uuids" ]; then
     error "Не удалось создать конфиг-профиль: ${cp_err:-проверьте адрес/токен панели}"
   fi
+  log_ok "Профиль создан. Inbound'ы: $inbound_uuids"
 
-  # Создаём ноду в панели
+  # Создаём ноду в панели (все inbound активны)
   log_info "Регистрация ноды в панели..."
   local node_uuid node_err=""
-  node_uuid=$(create_node "$panel_url" "$api_token" "$profile_uuid" "$inbound_uuid" "$node_domain" "$node_name" 2>/tmp/node_err.txt)
+  node_uuid=$(create_node "$panel_url" "$api_token" "$profile_uuid" "$inbound_uuids" "$node_domain" "$node_name" 2>/tmp/node_err.txt)
   node_err=$(cat /tmp/node_err.txt 2>/dev/null)
   if [ -z "$node_uuid" ]; then
     error "Не удалось создать ноду в панели: ${node_err:-проверьте адрес/токен панели}"
   fi
 
-  # Создаём host
-  log_info "Создание host..."
-  create_host "$panel_url" "$api_token" "$inbound_uuid" "$node_domain" "$profile_uuid"
+  # Создаём host для каждого inbound
+  log_info "Создание host'ов..."
+  for iu in $inbound_uuids; do
+    create_host "$panel_url" "$api_token" "$iu" "$node_domain" "$profile_uuid"
+  done
+  log_ok "Host'ы созданы"
 
-  # Добавляем inbound в squad
+  # Выбор squad'ов для добавления
   local squads
   squads=$(get_default_squads "$panel_url" "$api_token")
   if [ -n "$squads" ]; then
+    echo ""
+    echo -e "${COLOR_GREEN}Выберите squad'ы, в которые добавить inbound'ы ноды:${COLOR_RESET}"
+    echo -e "${COLOR_GRAY}(через пробел, например: 1 2; Enter без значения — добавить во все)${COLOR_RESET}"
+    local si=1
+    declare -A sqmap
     for sq in $squads; do
-      [ -z "$sq" ] && continue
-      update_squad "$panel_url" "$api_token" "$sq" "$inbound_uuid"
+      local sqname
+      sqname=$(api_request "GET" "${panel_url%/}/api/internal-squads" "$api_token" | jq -r --arg u "$sq" '.response.internalSquads[] | select(.uuid == $u) | .name // empty')
+      echo -e "${COLOR_YELLOW}$si. ${sqname:-$sq}${COLOR_RESET}"
+      sqmap[$si]="$sq"
+      ((si++))
     done
-    log_ok "Inbound добавлен в squad"
+    reading "Выберите squad'ы:" sq_choice
+    if [ -z "$sq_choice" ]; then
+      # все
+      for sq in $squads; do
+        for iu in $inbound_uuids; do
+          update_squad "$panel_url" "$api_token" "$sq" "$iu"
+        done
+      done
+      log_ok "Inbound'ы добавлены во все squad'ы"
+    else
+      for sel in $sq_choice; do
+        local sq="${sqmap[$sel]}"
+        [ -z "$sq" ] && continue
+        for iu in $inbound_uuids; do
+          update_squad "$panel_url" "$api_token" "$sq" "$iu"
+        done
+      done
+      log_ok "Inbound'ы добавлены в выбранные squad'ы"
+    fi
   fi
 
   # Получаем public key (для кампании)
