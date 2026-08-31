@@ -241,7 +241,7 @@ panel_has_nginx() { [ -f "$PANEL_DIR/nginx.conf" ]; }
 panel_has_caddy() { [ -f "$PANEL_DIR/Caddyfile" ]; }
 
 # Установка рандомной заглушки (из шаблонов rw-templates на GitHub)
-TEMPLATES_BASE="https://raw.githubusercontent.com/user-levap/rw-templates/main/templates"
+TEMPLATES_BASE="https://raw.githubusercontent.com/user-levap/rw-script/main/templates"
 randomhtml() {
   mkdir -p /var/www/html
   log_info "Загрузка случайного шаблона заглушки..."
