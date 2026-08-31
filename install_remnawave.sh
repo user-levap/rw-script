@@ -1207,6 +1207,17 @@ install_node() {
       node_cert="$node_domain"
     fi
   fi
+  # Синхронизируем сертификаты в /dev/shm (нужно для Hysteria2)
+  if [ -n "$node_cert" ] && [ -d "/etc/letsencrypt/live/$node_cert" ]; then
+    sync_certs_to_shm "$node_cert"
+  fi
+  # Открываем порты для протоколов ноды (TCP/UDP)
+  ufw allow 443/tcp >/dev/null 2>&1
+  ufw allow 443/udp >/dev/null 2>&1
+  ufw allow 8443/tcp >/dev/null 2>&1
+  ufw allow 8443/udp >/dev/null 2>&1
+  ufw allow 4443/tcp >/dev/null 2>&1
+  ufw reload >/dev/null 2>&1
 
   # dnscrypt... соберем docker-compose ноды
   if [ "${ALLOW_LOCAL_NODE:-0}" = "1" ]; then
