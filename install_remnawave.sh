@@ -293,6 +293,24 @@ select_version() {
   echo "$chosen_ver"
 }
 
+# Выбор веб-сервера (Nginx / Caddy)
+select_webserver() {
+  local target_var=$1
+  echo "" >&2
+  echo -e "${COLOR_GREEN}Выберите веб-сервер:${COLOR_RESET}" >&2
+  echo "" >&2
+  echo -e "${COLOR_YELLOW}1. Nginx${COLOR_RESET}" >&2
+  echo -e "${COLOR_YELLOW}2. Caddy${COLOR_RESET}" >&2
+  echo "" >&2
+  reading "Ваш выбор (1/2):" ws_opt
+  if [ "$ws_opt" = "2" ]; then
+    eval "$target_var=\"caddy\""
+  else
+    eval "$target_var=\"nginx\""
+  fi
+  echo "$target_var"
+}
+
 generate_xray_keys() {
   local url=$1
   local token=$2
@@ -302,13 +320,15 @@ generate_xray_keys() {
 
 create_config_profile() {
   local url=$1 token=$2 name=$3 domain=$4 private_key=$5
+  local dest="${6:-/dev/shm/nginx.sock}"
+  local xver="${7:-1}"
   local short_id=$(openssl rand -hex 8)
   # Уникальный тег на основе имени ноды (защита от конфликта тегов в панели)
   local tag=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
   [ -z "$tag" ] && tag="node"
   tag="${tag}-vless-443"
   local body
-  body=$(jq -n --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" --arg short_id "$short_id" --arg tag "$tag" '{
+  body=$(jq -n --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" --arg short_id "$short_id" --arg tag "$tag" --arg dest "$dest" --arg xver "$xver" '{
     name: $name,
     config: {
       log: { loglevel: "warning" },
@@ -324,8 +344,8 @@ create_config_profile() {
           security: "reality",
           realitySettings: {
             show: false,
-            xver: 1,
-            dest: "/dev/shm/nginx.sock",
+            xver: ($xver | tonumber),
+            dest: $dest,
             spiderX: "",
             shortIds: [$short_id],
             privateKey: $private_key,
@@ -643,6 +663,10 @@ install_panel() {
   local PANEL_VERSION=""
   select_version "Panel" "PANEL_VERSION"
 
+  # Выбор веб-сервера
+  local WEBSERVER=""
+  select_webserver "WEBSERVER"
+
   # Домены указываются БЕЗ https:// и слэшей
   reading "Домен панели (без https://, например panel.example.com):" PANEL_DOMAIN
   reading "Домен страницы подписки (без https://, например sub.example.com):" SUB_DOMAIN
@@ -709,8 +733,12 @@ install_panel() {
   fi
   log_ok "API-токен создан"
 
-  # 7. Reverse proxy (Nginx) + SSL по официальной документации
-  install_panel_nginx "$PANEL_DOMAIN" "$SUB_DOMAIN" "$api_token"
+  # 7. Reverse proxy + SSL
+  if [ "$WEBSERVER" = "caddy" ]; then
+    install_panel_caddy "$PANEL_DOMAIN" "$SUB_DOMAIN"
+  else
+    install_panel_nginx "$PANEL_DOMAIN" "$SUB_DOMAIN" "$api_token"
+  fi
 
   # 8. Страница подписки (bundled)
   install_panel_subscription "$SUB_DOMAIN" "$api_token"
@@ -841,6 +869,61 @@ EOL
   log_ok "Nginx reverse proxy запущен"
 }
 
+# Caddy reverse proxy (авто-SSL, по официальной документации)
+install_panel_caddy() {
+  local pdom=$1 sdom=$2
+  local cdir="$PANEL_DIR/caddy"
+  mkdir -p "$cdir" && cd "$cdir" || exit 1
+
+  cat > Caddyfile <<EOL
+https://${pdom} {
+    encode
+    reverse_proxy * http://remnawave:3000
+}
+
+https://${sdom} {
+    encode
+    reverse_proxy * http://remnawave-subscription-page:3010
+}
+
+:443 {
+    tls internal
+    respond 204
+}
+EOL
+
+  cat > docker-compose.yml <<EOL
+services:
+  caddy:
+    image: caddy:2.9
+    container_name: 'caddy'
+    hostname: caddy
+    restart: always
+    ports:
+      - '0.0.0.0:443:443'
+      - '0.0.0.0:80:80'
+    networks:
+      - remnawave-network
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-ssl-data:/data
+networks:
+  remnawave-network:
+    name: remnawave-network
+    driver: bridge
+    external: true
+volumes:
+  caddy-ssl-data:
+    driver: local
+    external: false
+    name: caddy-ssl-data
+EOL
+
+  docker compose up -d > /dev/null 2>&1 &
+  spinner $! "Ожидание..."
+  log_ok "Caddy reverse proxy запущен"
+}
+
 # Страница подписки (bundled) по официальной документации
 install_panel_subscription() {
   local sdom=$1 api_token=$2
@@ -918,6 +1001,10 @@ install_node() {
     reading "Домен ноды (без https://, например node.example.com):" node_domain
     reading "Название ноды (например Russia 2):" node_name
 
+    # Выбор веб-сервера для заглушки (fallback)
+    local WEBSERVER="nginx"
+    select_webserver "WEBSERVER"
+
     # Простой выбор версии ноды на усмотрение пользователя
     local NODE_IMAGE_VER=""
     select_version "Node" "NODE_IMAGE_VER"
@@ -933,11 +1020,20 @@ install_node() {
     error "Не удалось сгенерировать ключи. Проверьте адрес/токен панели"
   fi
 
-  # Создаём конфиг-профиль с reality (dest /dev/shm/nginx.sock)
+  # Создаём конфиг-профиль с reality
+  # dest зависит от выбранного веб-сервера:
+  #   nginx -> unix-сокет /dev/shm/nginx.sock (proxy_protocol, xver 1)
+  #   caddy -> 127.0.0.1:80 (HTTP fallback, xver 0)
+  local REALITY_DEST="/dev/shm/nginx.sock"
+  local REALITY_XVER=1
+  if [ "${WEBSERVER:-nginx}" = "caddy" ]; then
+    REALITY_DEST="127.0.0.1:80"
+    REALITY_XVER=0
+  fi
   log_info "Создание конфиг-профиля..."
   local profile_uuid inbound_uuid
   local cp_err=""
-  read profile_uuid inbound_uuid <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private" 2>/tmp/cp_err.txt)
+  read profile_uuid inbound_uuid <<< $(create_config_profile "$panel_url" "$api_token" "$node_name" "$node_domain" "$xr_private" "$REALITY_DEST" "$REALITY_XVER" 2>/tmp/cp_err.txt)
   cp_err=$(cat /tmp/cp_err.txt 2>/dev/null)
   if [ -z "$profile_uuid" ] || [ -z "$inbound_uuid" ]; then
     error "Не удалось создать конфиг-профиль: ${cp_err:-проверьте адрес/токен панели}"
@@ -1028,6 +1124,35 @@ x-logging: &logging
       max-file: 5
 
 services:
+EOL
+
+  if [ "${WEBSERVER:-nginx}" = "caddy" ]; then
+    # Caddy: TLS fallback на 127.0.0.1:9443 (reality dest = 127.0.0.1:9443)
+    cat >> docker-compose.yml <<EOL
+  node-caddy:
+    image: caddy:2.9
+    container_name: node-caddy
+    hostname: node-caddy
+    <<: [*common, *logging]
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /var/www/html:/var/www/html:ro
+      - caddy-node-data:/data
+EOL
+    cat > Caddyfile <<EOL
+https://127.0.0.1:9443 {
+    root * /var/www/html
+    file_server
+    tls internal
+}
+
+:9443 {
+    respond 404
+}
+EOL
+  else
+    cat >> docker-compose.yml <<EOL
   remnawave-nginx:
     image: nginx:1.28
     container_name: remnawave-nginx
@@ -1037,35 +1162,28 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
 EOL
+  fi
 
-  # Если есть сертификат - монтируем, иначе пустая заглушка
-  if [ -d "/etc/letsencrypt/live/$node_cert" ] && [ -n "$node_cert" ]; then
-    cat >> docker-compose.yml <<EOL
+  # Если есть сертификат - монтируем (для nginx), иначе пустая заглушка
+  if [ "${WEBSERVER:-nginx}" != "caddy" ]; then
+    if [ -d "/etc/letsencrypt/live/$node_cert" ] && [ -n "$node_cert" ]; then
+      cat >> docker-compose.yml <<EOL
       - /etc/letsencrypt/live/${node_cert}/fullchain.pem:/etc/nginx/ssl/${node_cert}/fullchain.pem:ro
       - /etc/letsencrypt/live/${node_cert}/privkey.pem:/etc/nginx/ssl/${node_cert}/privkey.pem:ro
       - /dev/shm:/dev/shm:rw
       - /var/www/html:/var/www/html:ro
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
-
-  remnanode:
-    image: ${NODE_IMAGE:-remnawave/node:latest}
-    container_name: remnanode
-    hostname: remnanode
-    <<: [*common, *logging]
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - NODE_PORT=2222
-      - SECRET_KEY=$secret_key
-    volumes:
-      - /dev/shm:/dev/shm:rw
 EOL
-  else
-    cat >> docker-compose.yml <<EOL
+    else
+      cat >> docker-compose.yml <<EOL
       - /dev/shm:/dev/shm:rw
       - /var/www/html:/var/www/html:ro
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
+EOL
+    fi
+  fi
+
+  cat >> docker-compose.yml <<EOL
 
   remnanode:
     image: ${NODE_IMAGE:-remnawave/node:latest}
@@ -1081,8 +1199,19 @@ EOL
     volumes:
       - /dev/shm:/dev/shm:rw
 EOL
+
+  if [ "${WEBSERVER:-nginx}" = "caddy" ]; then
+    cat >> docker-compose.yml <<EOL
+
+volumes:
+  caddy-node-data:
+    driver: local
+    external: false
+    name: caddy-node-data
+EOL
   fi
 
+  if [ "${WEBSERVER:-nginx}" != "caddy" ]; then
   cat > nginx.conf <<EOL
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ecdh_curve X25519:prime256v1:secp384r1;
@@ -1114,6 +1243,7 @@ server {
     return 444;
 }
 EOL
+fi
 
   # Рандомная заглушка
   randomhtml
