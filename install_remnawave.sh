@@ -322,6 +322,219 @@ generate_xray_keys() {
 }
 
 
+
+create_config_profile() {
+  local url=$1 token=$2 name=$3 domain=$4 private_key=$5
+  local dest="${6:-/dev/shm/nginx.sock}"
+  local xver="${7:-1}"
+  # Уникальный префикс тегов на основе имени ноды
+  local pre=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
+  [ -z "$pre" ] && pre="node"
+
+  # Реалистичные spiderX пути (как в реальных конфигах)
+  local spider_paths=("/admin/login" "/api/v1/" "/wp-login.php" "/graphql" "/oauth/token" "/auth/signin")
+  local sp=$((RANDOM % ${#spider_paths[@]}))
+  local spider_path="${spider_paths[$sp]}"
+
+  # 8 shortIds разной длины (имитация реальных)
+  local sid1=$(openssl rand -hex 6)   # 12 hex
+  local sid2=$(openssl rand -hex 3)   # 6
+  local sid3=$(openssl rand -hex 2)   # 4
+  local sid4=$(openssl rand -hex 1)   # 2
+  local sid5=$(openssl rand -hex 4)   # 8
+  local sid6=$(openssl rand -hex 3)
+  local sid7=$(openssl rand -hex 7)
+  local sid8=$(openssl rand -hex 4)
+
+  # Маскировка gRPC под популярный сервис
+  local grpc_svcs=("dropbox.com" "google.com" "apple.com" "microsoft.com" "samsung.com")
+  local gs=$((RANDOM % ${#grpc_svcs[@]}))
+  local grpc_service="${grpc_svcs[$gs]}"
+  # serverNames для grpc: домен ноды + маскируемый сервис
+  local grpc_sni="$domain,$grpc_service"
+
+  # Реалистичные xhttp path (как в new1.txt / тестовых)
+  local xhttp_paths=(
+    "/entertainment/movies/"
+    "/chat?ia=chat&origin=funnel_home_searchresults&t=h_&duckai=1&home=1&prompt=1&chip-select=chat"
+    "/method/video.reorderVideos"
+    "/bojieli/ai-agent-book/blob/main/docs/ru/"
+    "/en-us/iaas/Content/APIGateway/Concepts/"
+    "/course/275712/promo"
+  )
+  local xp=$((RANDOM % ${#xhttp_paths[@]}))
+  local xhttp_path="${xhttp_paths[$xp]}"
+  # fallback-цель для xhttp (по маскировке)
+  local xhttp_targets=("yahoo.com:443" "duckduckgo.com:443" "vk.com:443" "github.com:443" "www.oracle.com:443" "stepik.org:443")
+  local xt=$((RANDOM % ${#xhttp_targets[@]}))
+  local xhttp_target="${xhttp_targets[$xt]}"
+  local xhttp_sni="$domain,${xhttp_target%%:*}"
+
+  # fallback-цель для tcp reality
+  local tcp_targets=("www.apple.com:443" "www.microsoft.com:443" "www.intel.com:443" "www.samsung.com:443")
+  local tt=$((RANDOM % ${#tcp_targets[@]}))
+  local tcp_target="${tcp_targets[$tt]}"
+  local tcp_sni="$domain,${tcp_target%:*}"
+
+  # Hysteria obfs
+  local hysteria_obfs=$(openssl rand -hex 12)
+
+  # Fingerprint (случайный)
+  local fps=("chrome" "firefox")
+  local fp1=$((RANDOM % 2))
+  local fp2=$((RANDOM % 2))
+  local fp_xhttp="${fps[$fp1]}"
+  local fp_grpc="${fps[$fp2]}"
+
+  local body
+  body=$(jq -n \
+    --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" \
+    --arg spider_path "$spider_path" --arg dest "$dest" --arg xver "$xver" \
+    --arg pre "$pre" --arg grpc_service "$grpc_service" --arg grpc_sni "$grpc_sni" \
+    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" --arg xhttp_sni "$xhttp_sni" \
+    --arg tcp_target "$tcp_target" --arg tcp_sni "$tcp_sni" --arg hysteria_obfs "$hysteria_obfs" \
+    --arg fp_xhttp "$fp_xhttp" --arg fp_grpc "$fp_grpc" \
+    --arg sid1 "$sid1" --arg sid2 "$sid2" --arg sid3 "$sid3" --arg sid4 "$sid4" \
+    --arg sid5 "$sid5" --arg sid6 "$sid6" --arg sid7 "$sid7" --arg sid8 "$sid8" '{
+    name: $name,
+    config: {
+      log: { loglevel: "warning" },
+      dns: {
+        servers: [
+          { address: "77.88.8.8", domains: ["regexp:.*\\.ru$", "regexp:.*\\.su$", "regexp:.*\\.xn--p1ai$", "geosite:category-ru"], skipFallback: true },
+          { address: "https://1.1.1.1/dns-query", skipFallback: false },
+          { address: "https://8.8.8.8/dns-query", skipFallback: false }
+        ],
+        queryStrategy: "UseIPv4"
+      },
+      inbounds: [
+        {
+          tag: ($pre + "-vless-443"),
+          port: 443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
+          streamSettings: {
+            network: "tcp",
+            security: "reality",
+            realitySettings: {
+              show: false,
+              xver: ($xver | tonumber),
+              dest: $dest,
+              spiderX: $spider_path,
+              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
+              privateKey: $private_key,
+              serverNames: ($tcp_sni | split(","))
+            }
+          }
+        },
+        {
+          tag: ($pre + "-grpc-8443"),
+          port: 8443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
+          streamSettings: {
+            network: "grpc",
+            security: "reality",
+            grpcSettings: { multiMode: false, serviceName: $grpc_service },
+            realitySettings: {
+              show: false,
+              xver: 0,
+              dest: ($grpc_service + ":443"),
+              spiderX: "/",
+              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
+              privateKey: $private_key,
+              fingerprint: $fp_grpc,
+              serverNames: ($grpc_sni | split(","))
+            }
+          }
+        },
+        {
+          tag: ($pre + "-xhttp-4443"),
+          port: 4443,
+          protocol: "vless",
+          settings: { clients: [], decryption: "none" },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
+          streamSettings: {
+            network: "xhttp",
+            security: "reality",
+            xhttpSettings: {
+              mode: "auto",
+              path: $xhttp_path,
+              host: $domain,
+              noGRPCHeader: false,
+              xPaddingBytes: "100-1000",
+              scMaxBufferedPosts: 30,
+              scMaxEachPostBytes: "1000000",
+              scStreamUpServerSecs: "20-80"
+            },
+            realitySettings: {
+              show: false,
+              xver: 0,
+              dest: $xhttp_target,
+              spiderX: "/",
+              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
+              privateKey: $private_key,
+              fingerprint: $fp_xhttp,
+              serverNames: ($xhttp_sni | split(","))
+            }
+          }
+        },
+        {
+          tag: ($pre + "-hy2-8443"),
+          port: 8443,
+          protocol: "hysteria",
+          settings: { clients: [], version: 2 },
+          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
+          streamSettings: {
+            network: "hysteria",
+            security: "tls",
+            tlsSettings: {
+              alpn: ["h3"],
+              certificates: [
+                { keyFile: "/dev/shm/hysteria_key.pem", certificateFile: "/dev/shm/hysteria_cert.pem" }
+              ]
+            },
+            hysteriaSettings: {
+              version: 2,
+              obfs: "salamander",
+              password: $hysteria_obfs,
+              up: "50-100 mbps",
+              down: "200-500 mbps",
+              udpIdleTimeout: 60
+            }
+          }
+        }
+      ],
+      outbounds: [
+        { tag: "DIRECT", protocol: "freedom" },
+        { tag: "BLOCK", protocol: "blackhole" }
+      ],
+      routing: {
+        rules: [
+          { type: "field", protocol: ["bittorrent"], outboundTag: "BLOCK" },
+          { type: "field", domain: ["domain:mtalk.google.com", "domain:push.apple.com", "domain:api.push.apple.com"], outboundTag: "DIRECT" },
+          { type: "field", domain: ["domain:ru", "domain:su", "regexp:.*\\.ru$", "regexp:.*\\.su$", "geosite:category-ru", "domain:vk.com", "domain:vk.me", "domain:userapi.com", "domain:yandex", "domain:yandex.net", "domain:yastatic.net", "domain:yandexcloud.net", "domain:ozonusercontent.com", "domain:wbstatic.net", "domain:mradx.net", "domain:avito.st", "domain:youla.io", "domain:maps.me", "domain:okko.tv", "domain:more.tv", "domain:megogo.net", "domain:premier.one", "domain:2gis.com", "domain:cian.com", "domain:lenta.com"], outboundTag: "DIRECT" },
+          { type: "field", domain: ["geosite:private", "geosite:apple", "geosite:apple-pki", "geosite:huawei", "geosite:xiaomi"], outboundTag: "DIRECT" },
+          { ip: ["geoip:private", "geoip:ru"], type: "field", outboundTag: "DIRECT" },
+          { ip: ["geoip:private"], type: "field", outboundTag: "BLOCK" }
+        ],
+        domainMatcher: "hybrid",
+        domainStrategy: "IPIfNonMatch"
+      }
+    }
+  }')
+  local resp=$(api_request "POST" "${url%/}/api/config-profiles" "$token" "$body")
+  local puuid=$(echo "$resp" | jq -r '.response.uuid // empty' | head -1)
+  local iuuids=$(echo "$resp" | jq -r '.response.inbounds[].uuid' 2>/dev/null | tr '\n' ' ')
+  if [ -z "$puuid" ] || [ -z "$iuuids" ]; then
+    echo "ERROR: $resp" >&2
+    return 1
+  fi
+  echo "$puuid $iuuids"
+}
+
 create_node() {
   local url=$1 token=$2 profile_uuid=$3 address=$5 name=$6
   # inbound_uuid теперь список (разделяется пробелом) в $4
@@ -2081,214 +2294,3 @@ main() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   main "$@"
 fi
-create_config_profile() {
-  local url=$1 token=$2 name=$3 domain=$4 private_key=$5
-  local dest="${6:-/dev/shm/nginx.sock}"
-  local xver="${7:-1}"
-  # Уникальный префикс тегов на основе имени ноды
-  local pre=$(echo "${name}" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_')
-  [ -z "$pre" ] && pre="node"
-
-  # Реалистичные spiderX пути (как в реальных конфигах)
-  local spider_paths=("/admin/login" "/api/v1/" "/wp-login.php" "/graphql" "/oauth/token" "/auth/signin")
-  local sp=$((RANDOM % ${#spider_paths[@]}))
-  local spider_path="${spider_paths[$sp]}"
-
-  # 8 shortIds разной длины (имитация реальных)
-  local sid1=$(openssl rand -hex 6)   # 12 hex
-  local sid2=$(openssl rand -hex 3)   # 6
-  local sid3=$(openssl rand -hex 2)   # 4
-  local sid4=$(openssl rand -hex 1)   # 2
-  local sid5=$(openssl rand -hex 4)   # 8
-  local sid6=$(openssl rand -hex 3)
-  local sid7=$(openssl rand -hex 7)
-  local sid8=$(openssl rand -hex 4)
-
-  # Маскировка gRPC под популярный сервис
-  local grpc_svcs=("dropbox.com" "google.com" "apple.com" "microsoft.com" "samsung.com")
-  local gs=$((RANDOM % ${#grpc_svcs[@]}))
-  local grpc_service="${grpc_svcs[$gs]}"
-  # serverNames для grpc: домен ноды + маскируемый сервис
-  local grpc_sni="$domain,$grpc_service"
-
-  # Реалистичные xhttp path (как в new1.txt / тестовых)
-  local xhttp_paths=(
-    "/entertainment/movies/"
-    "/chat?ia=chat&origin=funnel_home_searchresults&t=h_&duckai=1&home=1&prompt=1&chip-select=chat"
-    "/method/video.reorderVideos"
-    "/bojieli/ai-agent-book/blob/main/docs/ru/"
-    "/en-us/iaas/Content/APIGateway/Concepts/"
-    "/course/275712/promo"
-  )
-  local xp=$((RANDOM % ${#xhttp_paths[@]}))
-  local xhttp_path="${xhttp_paths[$xp]}"
-  # fallback-цель для xhttp (по маскировке)
-  local xhttp_targets=("yahoo.com:443" "duckduckgo.com:443" "vk.com:443" "github.com:443" "www.oracle.com:443" "stepik.org:443")
-  local xt=$((RANDOM % ${#xhttp_targets[@]}))
-  local xhttp_target="${xhttp_targets[$xt]}"
-  local xhttp_sni="$domain,${xhttp_target%%:*}"
-
-  # fallback-цель для tcp reality
-  local tcp_targets=("www.apple.com:443" "www.microsoft.com:443" "www.intel.com:443" "www.samsung.com:443")
-  local tt=$((RANDOM % ${#tcp_targets[@]}))
-  local tcp_target="${tcp_targets[$tt]}"
-  local tcp_sni="$domain,${tcp_target%:*}"
-
-  # Hysteria obfs
-  local hysteria_obfs=$(openssl rand -hex 12)
-
-  # Fingerprint (случайный)
-  local fps=("chrome" "firefox")
-  local fp1=$((RANDOM % 2))
-  local fp2=$((RANDOM % 2))
-  local fp_xhttp="${fps[$fp1]}"
-  local fp_grpc="${fps[$fp2]}"
-
-  local body
-  body=$(jq -n \
-    --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" \
-    --arg spider_path "$spider_path" --arg dest "$dest" --arg xver "$xver" \
-    --arg pre "$pre" --arg grpc_service "$grpc_service" --arg grpc_sni "$grpc_sni" \
-    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" --arg xhttp_sni "$xhttp_sni" \
-    --arg tcp_target "$tcp_target" --arg tcp_sni "$tcp_sni" --arg hysteria_obfs "$hysteria_obfs" \
-    --arg fp_xhttp "$fp_xhttp" --arg fp_grpc "$fp_grpc" \
-    --arg sid1 "$sid1" --arg sid2 "$sid2" --arg sid3 "$sid3" --arg sid4 "$sid4" \
-    --arg sid5 "$sid5" --arg sid6 "$sid6" --arg sid7 "$sid7" --arg sid8 "$sid8" '{
-    name: $name,
-    config: {
-      log: { loglevel: "warning" },
-      dns: {
-        servers: [
-          { address: "77.88.8.8", domains: ["regexp:.*\\.ru$", "regexp:.*\\.su$", "regexp:.*\\.xn--p1ai$", "geosite:category-ru"], skipFallback: true },
-          { address: "https://1.1.1.1/dns-query", skipFallback: false },
-          { address: "https://8.8.8.8/dns-query", skipFallback: false }
-        ],
-        queryStrategy: "UseIPv4"
-      },
-      inbounds: [
-        {
-          tag: ($pre + "-vless-443"),
-          port: 443,
-          protocol: "vless",
-          settings: { clients: [], decryption: "none" },
-          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
-          streamSettings: {
-            network: "tcp",
-            security: "reality",
-            realitySettings: {
-              show: false,
-              xver: ($xver | tonumber),
-              dest: $dest,
-              spiderX: $spider_path,
-              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
-              privateKey: $private_key,
-              serverNames: ($tcp_sni | split(","))
-            }
-          }
-        },
-        {
-          tag: ($pre + "-grpc-8443"),
-          port: 8443,
-          protocol: "vless",
-          settings: { clients: [], decryption: "none" },
-          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
-          streamSettings: {
-            network: "grpc",
-            security: "reality",
-            grpcSettings: { multiMode: false, serviceName: $grpc_service },
-            realitySettings: {
-              show: false,
-              xver: 0,
-              dest: ($grpc_service + ":443"),
-              spiderX: "/",
-              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
-              privateKey: $private_key,
-              fingerprint: $fp_grpc,
-              serverNames: ($grpc_sni | split(","))
-            }
-          }
-        },
-        {
-          tag: ($pre + "-xhttp-4443"),
-          port: 4443,
-          protocol: "vless",
-          settings: { clients: [], decryption: "none" },
-          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
-          streamSettings: {
-            network: "xhttp",
-            security: "reality",
-            xhttpSettings: {
-              mode: "auto",
-              path: $xhttp_path,
-              host: $domain,
-              noGRPCHeader: false,
-              xPaddingBytes: "100-1000",
-              scMaxBufferedPosts: 30,
-              scMaxEachPostBytes: "1000000",
-              scStreamUpServerSecs: "20-80"
-            },
-            realitySettings: {
-              show: false,
-              xver: 0,
-              dest: $xhttp_target,
-              spiderX: "/",
-              shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
-              privateKey: $private_key,
-              fingerprint: $fp_xhttp,
-              serverNames: ($xhttp_sni | split(","))
-            }
-          }
-        },
-        {
-          tag: ($pre + "-hy2-8443"),
-          port: 8443,
-          protocol: "hysteria",
-          settings: { clients: [], version: 2 },
-          sniffing: { enabled: true, destOverride: ["http", "tls", "quic", "fakedns"] },
-          streamSettings: {
-            network: "hysteria",
-            security: "tls",
-            tlsSettings: {
-              alpn: ["h3"],
-              certificates: [
-                { keyFile: "/dev/shm/hysteria_key.pem", certificateFile: "/dev/shm/hysteria_cert.pem" }
-              ]
-            },
-            hysteriaSettings: {
-              version: 2,
-              obfs: "salamander",
-              password: $hysteria_obfs,
-              up: "50-100 mbps",
-              down: "200-500 mbps",
-              udpIdleTimeout: 60
-            }
-          }
-        }
-      ],
-      outbounds: [
-        { tag: "DIRECT", protocol: "freedom" },
-        { tag: "BLOCK", protocol: "blackhole" }
-      ],
-      routing: {
-        rules: [
-          { type: "field", protocol: ["bittorrent"], outboundTag: "BLOCK" },
-          { type: "field", domain: ["domain:mtalk.google.com", "domain:push.apple.com", "domain:api.push.apple.com"], outboundTag: "DIRECT" },
-          { type: "field", domain: ["domain:ru", "domain:su", "regexp:.*\\.ru$", "regexp:.*\\.su$", "geosite:category-ru", "domain:vk.com", "domain:vk.me", "domain:userapi.com", "domain:yandex", "domain:yandex.net", "domain:yastatic.net", "domain:yandexcloud.net", "domain:ozonusercontent.com", "domain:wbstatic.net", "domain:mradx.net", "domain:avito.st", "domain:youla.io", "domain:maps.me", "domain:okko.tv", "domain:more.tv", "domain:megogo.net", "domain:premier.one", "domain:2gis.com", "domain:cian.com", "domain:lenta.com"], outboundTag: "DIRECT" },
-          { type: "field", domain: ["geosite:private", "geosite:apple", "geosite:apple-pki", "geosite:huawei", "geosite:xiaomi"], outboundTag: "DIRECT" },
-          { ip: ["geoip:private", "geoip:ru"], type: "field", outboundTag: "DIRECT" },
-          { ip: ["geoip:private"], type: "field", outboundTag: "BLOCK" }
-        ],
-        domainMatcher: "hybrid",
-        domainStrategy: "IPIfNonMatch"
-      }
-    }
-  }')
-  local resp=$(api_request "POST" "${url%/}/api/config-profiles" "$token" "$body")
-  local puuid=$(echo "$resp" | jq -r '.response.uuid // empty' | head -1)
-  local iuuids=$(echo "$resp" | jq -r '.response.inbounds[].uuid' 2>/dev/null | tr '\n' ' ')
-  if [ -z "$puuid" ] || [ -z "$iuuids" ]; then
-    echo "ERROR: $resp" >&2
-    return 1
-  fi
-  echo "$puuid $iuuids"
-}
