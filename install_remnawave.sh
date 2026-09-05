@@ -541,6 +541,13 @@ create_config_profile() {
   echo "$puuid $iuuids"
 }
 
+# Проверка, занят ли адрес ноды в панели (A034 защита)
+check_node_address_exists() {
+  local url=$1 token=$2 address=$3
+  local resp=$(api_request "GET" "${url%/}/api/nodes" "$token")
+  echo "$resp" | jq -r --arg a "$address" '[.response[] | select(.address == $a)] | length' 2>/dev/null
+}
+
 create_node() {
   local url=$1 token=$2 profile_uuid=$3 address=$5 name=$6
   # inbound_uuid теперь список (разделяется пробелом) в $4
@@ -1171,6 +1178,18 @@ install_node() {
     reading "API ключ панели:" api_token
 
     reading "Домен ноды (без https://, например node.example.com):" node_domain
+    # Проверка, что адрес ноды ещё не занят в панели
+    local addr_taken
+    addr_taken=$(check_node_address_exists "$panel_url" "$api_token" "$node_domain")
+    while [ "$addr_taken" != "0" ]; do
+      log_warn "Адрес $node_domain уже используется другой нодой в панели."
+      reading "Введите другой адрес ноды (или 0 для отмены):" node_domain
+      if [ "$node_domain" = "0" ]; then
+        log_warn "Установка отменена"
+        return
+      fi
+      addr_taken=$(check_node_address_exists "$panel_url" "$api_token" "$node_domain")
+    done
     reading "Название ноды (например Russia 2):" node_name
     # Санитизация имени ноды: панель разрешает только [A-Za-z0-9 _-]
     node_name=$(echo "$node_name" | tr -cd 'A-Za-z0-9 _-' | tr -s ' ' | sed 's/^ *//;s/ *$//')
