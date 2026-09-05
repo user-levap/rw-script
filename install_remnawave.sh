@@ -346,12 +346,10 @@ create_config_profile() {
   local sid7=$(openssl rand -hex 7)
   local sid8=$(openssl rand -hex 4)
 
-  # Маскировка gRPC под популярный сервис
+  # Маскировка gRPC под популярный сервис (только как dest/fallback, не в serverNames)
   local grpc_svcs=("dropbox.com" "google.com" "apple.com" "microsoft.com" "samsung.com")
   local gs=$((RANDOM % ${#grpc_svcs[@]}))
   local grpc_service="${grpc_svcs[$gs]}"
-  # serverNames для grpc: домен ноды + маскируемый сервис
-  local grpc_sni="$domain,$grpc_service"
 
   # Реалистичные xhttp path (как в new1.txt / тестовых)
   local xhttp_paths=(
@@ -368,13 +366,11 @@ create_config_profile() {
   local xhttp_targets=("yahoo.com:443" "duckduckgo.com:443" "vk.com:443" "github.com:443" "www.oracle.com:443" "stepik.org:443")
   local xt=$((RANDOM % ${#xhttp_targets[@]}))
   local xhttp_target="${xhttp_targets[$xt]}"
-  local xhttp_sni="$domain,${xhttp_target%%:*}"
 
   # fallback-цель для tcp reality
   local tcp_targets=("www.apple.com:443" "www.microsoft.com:443" "www.intel.com:443" "www.samsung.com:443")
   local tt=$((RANDOM % ${#tcp_targets[@]}))
   local tcp_target="${tcp_targets[$tt]}"
-  local tcp_sni="$domain,${tcp_target%:*}"
 
   # Hysteria obfs
   local hysteria_obfs=$(openssl rand -hex 12)
@@ -390,9 +386,9 @@ create_config_profile() {
   body=$(jq -n \
     --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" \
     --arg spider_path "$spider_path" --arg dest "$dest" --arg xver "$xver" \
-    --arg pre "$pre" --arg grpc_service "$grpc_service" --arg grpc_sni "$grpc_sni" \
-    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" --arg xhttp_sni "$xhttp_sni" \
-    --arg tcp_target "$tcp_target" --arg tcp_sni "$tcp_sni" --arg hysteria_obfs "$hysteria_obfs" \
+    --arg pre "$pre" --arg grpc_service "$grpc_service" \
+    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" \
+    --arg tcp_target "$tcp_target" --arg hysteria_obfs "$hysteria_obfs" \
     --arg fp_xhttp "$fp_xhttp" --arg fp_grpc "$fp_grpc" \
     --arg sid1 "$sid1" --arg sid2 "$sid2" --arg sid3 "$sid3" --arg sid4 "$sid4" \
     --arg sid5 "$sid5" --arg sid6 "$sid6" --arg sid7 "$sid7" --arg sid8 "$sid8" '{
@@ -424,7 +420,7 @@ create_config_profile() {
               spiderX: $spider_path,
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
-              serverNames: ($tcp_sni | split(","))
+              serverNames: [$domain]
             }
           }
         },
@@ -446,7 +442,7 @@ create_config_profile() {
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
               fingerprint: $fp_grpc,
-              serverNames: ($grpc_sni | split(","))
+              serverNames: [$domain]
             }
           }
         },
@@ -477,7 +473,7 @@ create_config_profile() {
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
               fingerprint: $fp_xhttp,
-              serverNames: ($xhttp_sni | split(","))
+              serverNames: [$domain]
             }
           }
         },
