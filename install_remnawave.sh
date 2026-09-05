@@ -356,10 +356,8 @@ create_config_profile() {
     "www.samsung.com|samsung.com|account.samsung.com|shop.samsung.com|news.samsung.com"
   )
   local fb_idx=$((RANDOM % ${#fb_sites[@]}))
-  local tcp_target="${fb_sites[$fb_idx]}:443"
   local grpc_target="${fb_sites[$((RANDOM % ${#fb_sites[@]}))]}:443"
   local grpc_domains="${fb_subdomains[$fb_idx]}"
-  local tcp_domains="${fb_subdomains[$fb_idx]}"
   local grpc_service=""
 
   # Реалистичные xhttp path (как в new1.txt / тестовых)
@@ -396,7 +394,7 @@ create_config_profile() {
     --arg pre "$pre" --arg grpc_service "$grpc_service" \
     --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" --arg xhttp_domains "$xhttp_domains" \
     --arg grpc_target "$grpc_target" --arg grpc_domains "$grpc_domains" \
-    --arg tcp_target "$tcp_target" --arg tcp_domains "$tcp_domains" \
+    --arg dest "$dest" --arg xver "$xver" \
     --arg hysteria_obfs "$hysteria_obfs" \
     --arg fp_tcp "$fp_tcp" --arg fp_grpc "$fp_grpc" --arg fp_xhttp "$fp_xhttp" \
     --arg sid1 "$sid1" --arg sid2 "$sid2" --arg sid3 "$sid3" --arg sid4 "$sid4" \
@@ -424,13 +422,13 @@ create_config_profile() {
             security: "reality",
             realitySettings: {
               show: false,
-              xver: 0,
-              dest: $tcp_target,
+              xver: ($xver | tonumber),
+              dest: $dest,
               spiderX: $spider_path,
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
               fingerprint: $fp_tcp,
-              serverNames: ($tcp_domains | split("|"))
+              serverNames: [$domain]
             }
           }
         },
