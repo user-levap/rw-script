@@ -346,10 +346,21 @@ create_config_profile() {
   local sid7=$(openssl rand -hex 7)
   local sid8=$(openssl rand -hex 4)
 
-  # Маскировка gRPC под популярный сервис (только как dest/fallback, не в serverNames)
-  local grpc_svcs=("dropbox.com" "google.com" "apple.com" "microsoft.com" "samsung.com")
-  local gs=$((RANDOM % ${#grpc_svcs[@]}))
-  local grpc_service="${grpc_svcs[$gs]}"
+  # Массивы fallback-сайтов: каждому соответствует список поддоменов (для serverNames)
+  local fb_sites=("www.apple.com" "www.microsoft.com" "www.intel.com" "aws.amazon.com" "www.samsung.com")
+  local fb_subdomains=(
+    "www.apple.com|apple.com|support.apple.com|developer.apple.com|store.apple.com"
+    "www.microsoft.com|microsoft.com|support.microsoft.com|learn.microsoft.com|www.microsoftstore.com"
+    "www.intel.com|intel.com|ark.intel.com|edc.intel.com|newsroom.intel.com"
+    "aws.amazon.com|amazonaws.com|amazon.com|aws-us-west-2.amazon.com|www.aws.amazon.com|amazonaws-china.com"
+    "www.samsung.com|samsung.com|account.samsung.com|shop.samsung.com|news.samsung.com"
+  )
+  local fb_idx=$((RANDOM % ${#fb_sites[@]}))
+  local tcp_target="${fb_sites[$fb_idx]}:443"
+  local grpc_target="${fb_sites[$((RANDOM % ${#fb_sites[@]}))]}:443"
+  local grpc_domains="${fb_subdomains[$fb_idx]}"
+  local tcp_domains="${fb_subdomains[$fb_idx]}"
+  local grpc_service=""
 
   # Реалистичные xhttp path (как в new1.txt / тестовых)
   local xhttp_paths=(
@@ -366,30 +377,28 @@ create_config_profile() {
   local xhttp_targets=("yahoo.com:443" "duckduckgo.com:443" "vk.com:443" "github.com:443" "www.oracle.com:443" "stepik.org:443")
   local xt=$((RANDOM % ${#xhttp_targets[@]}))
   local xhttp_target="${xhttp_targets[$xt]}"
-
-  # fallback-цель для tcp reality
-  local tcp_targets=("www.apple.com:443" "www.microsoft.com:443" "www.intel.com:443" "www.samsung.com:443")
-  local tt=$((RANDOM % ${#tcp_targets[@]}))
-  local tcp_target="${tcp_targets[$tt]}"
+  # домены для xhttp serverNames (домен ноды + fallback-сайт)
+  local xhttp_domains="$domain,${xhttp_target%%:*}"
 
   # Hysteria obfs
   local hysteria_obfs=$(openssl rand -hex 12)
 
-  # Fingerprint (случайный)
+  # Fingerprint (случайный chrome/firefox)
   local fps=("chrome" "firefox")
-  local fp1=$((RANDOM % 2))
-  local fp2=$((RANDOM % 2))
-  local fp_xhttp="${fps[$fp1]}"
-  local fp_grpc="${fps[$fp2]}"
+  local fp_tcp="${fps[$((RANDOM % 2))]}"
+  local fp_grpc="${fps[$((RANDOM % 2))]}"
+  local fp_xhttp="${fps[$((RANDOM % 2))]}"
 
   local body
   body=$(jq -n \
     --arg name "$name" --arg domain "$domain" --arg private_key "$private_key" \
-    --arg spider_path "$spider_path" --arg dest "$dest" --arg xver "$xver" \
+    --arg spider_path "$spider_path" \
     --arg pre "$pre" --arg grpc_service "$grpc_service" \
-    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" \
-    --arg tcp_target "$tcp_target" --arg hysteria_obfs "$hysteria_obfs" \
-    --arg fp_xhttp "$fp_xhttp" --arg fp_grpc "$fp_grpc" \
+    --arg xhttp_path "$xhttp_path" --arg xhttp_target "$xhttp_target" --arg xhttp_domains "$xhttp_domains" \
+    --arg grpc_target "$grpc_target" --arg grpc_domains "$grpc_domains" \
+    --arg tcp_target "$tcp_target" --arg tcp_domains "$tcp_domains" \
+    --arg hysteria_obfs "$hysteria_obfs" \
+    --arg fp_tcp "$fp_tcp" --arg fp_grpc "$fp_grpc" --arg fp_xhttp "$fp_xhttp" \
     --arg sid1 "$sid1" --arg sid2 "$sid2" --arg sid3 "$sid3" --arg sid4 "$sid4" \
     --arg sid5 "$sid5" --arg sid6 "$sid6" --arg sid7 "$sid7" --arg sid8 "$sid8" '{
     name: $name,
@@ -415,12 +424,13 @@ create_config_profile() {
             security: "reality",
             realitySettings: {
               show: false,
-              xver: ($xver | tonumber),
-              dest: $dest,
+              xver: 0,
+              dest: $tcp_target,
               spiderX: $spider_path,
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
-              serverNames: [$domain]
+              fingerprint: $fp_tcp,
+              serverNames: ($tcp_domains | split("|"))
             }
           }
         },
@@ -437,12 +447,12 @@ create_config_profile() {
             realitySettings: {
               show: false,
               xver: 0,
-              dest: ($grpc_service + ":443"),
-              spiderX: "/",
+              dest: $grpc_target,
+              spiderX: $spider_path,
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
               fingerprint: $fp_grpc,
-              serverNames: [$domain]
+              serverNames: ($grpc_domains | split("|"))
             }
           }
         },
@@ -473,7 +483,7 @@ create_config_profile() {
               shortIds: [$sid1, $sid2, $sid3, $sid4, $sid5, $sid6, $sid7, $sid8],
               privateKey: $private_key,
               fingerprint: $fp_xhttp,
-              serverNames: [$domain]
+              serverNames: ($xhttp_domains | split(","))
             }
           }
         },
