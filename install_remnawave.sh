@@ -1170,7 +1170,7 @@ install_node() {
     log_ok "Будет установлена нода: $NODE_IMAGE"
   else
     # Адрес панели указывается БЕЗ https:// и слэшей
-    reading "Адрес панели (без https://, например panel.npgift.ru):" panel_url
+    reading "Адрес панели (без https://, например panel.example.com):" panel_url
     # Нормализуем: добавляем https:// если нет протокола
     if [[ "$panel_url" != http://* && "$panel_url" != https://* ]]; then
       panel_url="https://$panel_url"
