@@ -1163,6 +1163,9 @@ install_node() {
 
     reading "Домен ноды (без https://, например node.example.com):" node_domain
     reading "Название ноды (например Russia 2):" node_name
+    # Санитизация имени ноды: панель разрешает только [A-Za-z0-9 _-]
+    node_name=$(echo "$node_name" | tr -cd 'A-Za-z0-9 _-' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+    [ -z "$node_name" ] && node_name="Node"
 
     # Выбор веб-сервера для заглушки (fallback)
     local WEBSERVER="nginx"
