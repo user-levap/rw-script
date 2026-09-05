@@ -567,14 +567,17 @@ create_node() {
 
 create_host() {
   local url=$1 token=$2 inbound_uuid=$3 address=$4 profile_uuid=$5
+  local hport="${6:-443}"
+  local hpath="${7:-}"
+  local hsni="${8:-$address}"
   local body
-  body=$(jq -n --arg pu "$profile_uuid" --arg iu "$inbound_uuid" --arg address "$address" '{
+  body=$(jq -n --arg pu "$profile_uuid" --arg iu "$inbound_uuid" --arg address "$address" --arg hport "$hport" --arg hpath "$hpath" --arg hsni "$hsni" '{
     inbound: { configProfileUuid: $pu, configProfileInboundUuid: $iu },
     remark: $address,
     address: $address,
-    port: 443,
-    path: "",
-    sni: $address,
+    port: ($hport | tonumber),
+    path: $hpath,
+    sni: $hsni,
     host: "",
     alpn: null,
     fingerprint: "chrome",
@@ -1215,10 +1218,13 @@ install_node() {
     error "Не удалось создать ноду в панели: ${node_err:-проверьте адрес/токен панели}"
   fi
 
-  # Создаём host для каждого inbound
+  # Создаём host для каждого inbound (порты: vless 443, grpc 8443, xhttp 4443, hy2 8443)
   log_info "Создание host'ов..."
+  local ports=("443" "8443" "4443" "8443")
+  local i=0
   for iu in $inbound_uuids; do
-    create_host "$panel_url" "$api_token" "$iu" "$node_domain" "$profile_uuid"
+    create_host "$panel_url" "$api_token" "$iu" "$node_domain" "$profile_uuid" "${ports[$i]:-443}"
+    i=$((i+1))
   done
   log_ok "Host'ы созданы"
 
